@@ -41,16 +41,6 @@ public class ActivityManagerCommonProxy {
     // ("Invalid key hash" / "Something went wrong"). PM-level hiding
     // cannot stop a direct startActivity, so fail the launch in-process
     // here; the SDK then falls back to its web dialog flow.
-    //
-    // DevxyzClone 1.1.1 (STUDY-KATANA-NATIVE condition A): this block is
-    // lifted, together with the IPackageManagerProxy visibility gate,
-    // when the native route is active for the caller - Katana CLONED
-    // into the caller's virtual user and the caller not a Meta-family
-    // app. In that state the block's call site is only reached when
-    // virtual resolution already failed, and failing closed would leave
-    // a visible-but-unlaunchable Katana; when the route is NOT active
-    // the 1.1.0 block applies unchanged, so no Katana intent from a
-    // clone ever falls through to the real ActivityManager.
     private static boolean shouldBlockFacebookNativeLaunch(Intent intent) {
         if (intent == null) {
             return false;
@@ -72,38 +62,6 @@ public class ActivityManagerCommonProxy {
             String act = intent.getAction();
             return act != null && (act.startsWith("com.facebook.katana.")
                     || act.startsWith("com.facebook.platform."));
-        } catch (Throwable ignored) {
-        }
-        return false;
-    }
-
-    // DevxyzClone 1.1.1: mirror of IPackageManagerProxy's native-route
-    // predicate (the two proxies already duplicate the Katana caller
-    // exemptions above; keep these in lockstep). Meta-family callers -
-    // Muse (com.facebook.aura) above all - never get the lift: their
-    // 1.1.0 hidden/blocked behavior is caller-keyed protection, not
-    // part of the games' native route.
-    private static final String PKG_FACEBOOK_AURA = "com.facebook.aura";
-    private static final String PKG_FACEBOOK_ORCA = "com.facebook.orca";
-    private static final String PKG_FACEBOOK_WAKIZASHI = "com.facebook.wakizashi";
-
-    private static boolean isMetaFamilyCaller(String callerPackage) {
-        return PKG_FACEBOOK_AURA.equals(callerPackage)
-                || PKG_FACEBOOK_ORCA.equals(callerPackage)
-                || PKG_FACEBOOK_WAKIZASHI.equals(callerPackage);
-    }
-
-    private static boolean isKatanaNativeRouteActive() {
-        try {
-            String callerPackage = BActivityThread.getAppPackageName();
-            if (callerPackage == null
-                    || PKG_FACEBOOK_KATANA.equals(callerPackage)
-                    || callerPackage.equals(BlackBoxCore.getHostPkg())
-                    || isMetaFamilyCaller(callerPackage)) {
-                return false;
-            }
-            return BlackBoxCore.getBPackageManager()
-                    .isInstalled(PKG_FACEBOOK_KATANA, BActivityThread.getUserId());
         } catch (Throwable ignored) {
         }
         return false;
@@ -305,27 +263,13 @@ public class ActivityManagerCommonProxy {
                     // DevxyzClone fix (round 4, ported): block the
                     // fallthrough launch of the real Facebook app (see
                     // shouldBlockFacebookNativeLaunch).
-                    // DevxyzClone 1.1.1: the block lifts together with
-                    // the IPM gate when the native route is active for
-                    // this caller (Katana cloned, non-Meta caller); in
-                    // every other state the 1.1.0 block is unchanged.
                     if (shouldBlockFacebookNativeLaunch(intent)) {
-                        if (isKatanaNativeRouteActive()) {
-                            fbDiagLog("startActivity katana launch ALLOWED caller="
-                                    + BActivityThread.getAppPackageName()
-                                    + " pkg=" + intent.getPackage()
-                                    + " cmp=" + intent.getComponent()
-                                    + " act=" + intent.getAction()
-                                    + " reason=katana-cloned native-route");
-                        } else {
-                            fbDiagLog("startActivity BLOCKED katana launch caller="
-                                    + BActivityThread.getAppPackageName()
-                                    + " pkg=" + intent.getPackage()
-                                    + " cmp=" + intent.getComponent()
-                                    + " act=" + intent.getAction()
-                                    + " reason=native-route-inactive");
-                            return getStartIntentNotResolvedCode();
-                        }
+                        fbDiagLog("startActivity BLOCKED katana launch caller="
+                                + BActivityThread.getAppPackageName()
+                                + " pkg=" + intent.getPackage()
+                                + " cmp=" + intent.getComponent()
+                                + " act=" + intent.getAction());
+                        return getStartIntentNotResolvedCode();
                     }
 
                     return method.invoke(who, args);
