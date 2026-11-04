@@ -106,6 +106,10 @@ class ClonesActivity : BaseActivity() {
         }
 
         showRecords(registry.loadRecords())
+
+        // DevxyzMuse auto-update: silently checks version.json in the
+        // DevxyzMuse repo (throttled to once per 6 hours).
+        AppUpdater.check(this)
     }
 
     private var validated = false
@@ -204,6 +208,15 @@ class ClonesActivity : BaseActivity() {
     // ------------------------------------------------------------------
 
     private fun installClone(source: String, userId: Int) {
+        // DevxyzMuse pre-guard: a plain package-name source that is not
+        // Muse is rejected before anything is installed. File/URI sources
+        // are covered by the post-install guard below.
+        val isFileOrUriSource = source.startsWith("content://") ||
+            source.startsWith("file://") || File(source).isFile
+        if (!isFileOrUriSource && source != ALLOWED_PACKAGE) {
+            Toast.makeText(this, MUSE_ONLY_MESSAGE, Toast.LENGTH_LONG).show()
+            return
+        }
         setBusy(true)
         lifecycleScope.launch {
             val result = withContext(Dispatchers.IO) {
@@ -224,6 +237,21 @@ class ClonesActivity : BaseActivity() {
             setBusy(false)
             if (result != null && result.success) {
                 val pkg = result.packageName ?: source
+                // DevxyzMuse post-guard: an APK-file install that turns out
+                // not to be Muse is uninstalled again and never registered.
+                if (pkg != ALLOWED_PACKAGE) {
+                    withContext(Dispatchers.IO) {
+                        try {
+                            BlackBoxCore.get().uninstallPackageAsUser(pkg, userId)
+                            BlackBoxCore.get().deleteUser(userId)
+                        } catch (e: Exception) {
+                            // no-op: cleanup is best-effort
+                        }
+                    }
+                    Toast.makeText(this@ClonesActivity, MUSE_ONLY_MESSAGE, Toast.LENGTH_LONG).show()
+                    refresh()
+                    return@launch
+                }
                 // DevxyzClone 1.0.10: record HOW this clone was installed and
                 // how many split APKs the engine registered for it. Her phone
                 // runs Play split installs (ML base carries 0 native libs -
@@ -440,6 +468,10 @@ class ClonesActivity : BaseActivity() {
     companion object {
         private const val KEY_PENDING_USER = "pendingUserId"
         private const val POWERED_BY = "Powered by Jepong Devxyz"
+        // DevxyzMuse: this variant clones ONLY the Muse app.
+        private const val ALLOWED_PACKAGE = "com.facebook.aura"
+        private const val MUSE_ONLY_MESSAGE =
+            "DevxyzMuse can only clone the Muse app."
     }
 }
 

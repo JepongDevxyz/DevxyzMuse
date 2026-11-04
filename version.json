@@ -1,0 +1,6 @@
+{
+  "versionCode": 480,
+  "versionName": "1.0.0",
+  "apkUrl": "https://github.com/JepongDevxyz/DevxyzMuse/releases/download/v1.0.0/DevxyzMuse_1.0.0-arm64-v8a-debug.apk",
+  "notes": "First DevxyzMuse release: Muse-only clone app, based on the DevxyzClone 1.1.0 code whose Muse clone sign-in is proven on Honor 400 5G."
+}

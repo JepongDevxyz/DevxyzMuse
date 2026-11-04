@@ -79,7 +79,7 @@ class DiagLogActivity : BaseActivity() {
         }
         val send = Intent(Intent.ACTION_SEND).apply {
             type = "text/plain"
-            putExtra(Intent.EXTRA_SUBJECT, "DevxyzClone diagnostic log")
+            putExtra(Intent.EXTRA_SUBJECT, "DevxyzMuse diagnostic log")
             putExtra(Intent.EXTRA_TEXT, text)
         }
         startActivity(Intent.createChooser(send, "Share diagnostic log"))

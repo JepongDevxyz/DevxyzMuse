@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <string name="app_name">DevxyzClone</string>
+    <string name="app_name">DevxyzMuse</string>
     <string name="choose">Choose</string>
     <string name="choose_app">Choose App</string>
     <string name="installed_app">Installed App</string>
@@ -69,10 +69,10 @@
     <string name="no_gms">Currently, there is no Google service environment on mobile phones.</string>
     <string name="gms_auto_on_unavailable">Clone created, but Google services are not available for it</string>
     <string name="clone_delete">Delete clone</string>
-    <string name="clone_delete_hint">Delete %s? Its data inside DevxyzClone will be wiped.</string>
+    <string name="clone_delete_hint">Delete %s? Its data inside DevxyzMuse will be wiped.</string>
     <string name="clone_rename">Rename clone</string>
     <string name="clone_name_empty">Name cannot be empty</string>
-    <string name="clones_empty">No clones yet.\nTap + to clone an app.</string>
+    <string name="clones_empty">No Muse clones yet.\nTap + to clone the Muse app.</string>
     <string name="clones_profiles">Profiles</string>
     <string name="clone_open">Open clone</string>
     <string name="clone_reset_name">Reset name</string>

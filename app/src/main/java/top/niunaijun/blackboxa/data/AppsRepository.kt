@@ -18,6 +18,13 @@ import top.niunaijun.blackboxa.util.getString
 
 class AppsRepository {
     val TAG: String = "AppsRepository"
+
+    companion object {
+        // DevxyzMuse: this variant clones ONLY the Muse app.
+        const val ALLOWED_CLONE_PACKAGE = "com.facebook.aura"
+        const val MUSE_ONLY_MESSAGE =
+            "DevxyzMuse can only clone the Muse app (com.facebook.aura)."
+    }
     private var mInstalledList = mutableListOf<AppInfo>()
 
     
@@ -90,6 +97,10 @@ class AppsRepository {
                         val file = File(installedApplication.sourceDir)
 
                         if ((installedApplication.flags and ApplicationInfo.FLAG_SYSTEM) != 0)
+                                continue
+
+                        // DevxyzMuse: the picker offers ONLY the Muse app.
+                        if (installedApplication.packageName != ALLOWED_CLONE_PACKAGE)
                                 continue
 
                         if (!AbiUtils.isSupport(file)) continue
@@ -398,6 +409,18 @@ class AppsRepository {
                     } else {
                         blackBoxCore.installPackageAsUser(source, userId)
                     }
+
+            // DevxyzMuse guard: whatever the install path (picker or APK
+            // file), a non-Muse package is removed again immediately.
+            if (installResult.success && installResult.packageName != ALLOWED_CLONE_PACKAGE) {
+                try {
+                    blackBoxCore.uninstallPackageAsUser(installResult.packageName, userId)
+                } catch (e: Exception) {
+                    Log.w(TAG, "Muse-only cleanup failed: ${e.message}")
+                }
+                resultLiveData.postValue(MUSE_ONLY_MESSAGE)
+                return
+            }
 
             if (installResult.success) {
                 updateAppSortList(userId, installResult.packageName, true)

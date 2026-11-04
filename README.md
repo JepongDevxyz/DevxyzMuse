@@ -1,3 +1,23 @@
+# DevxyzMuse
+
+**DevxyzMuse** is a Muse-only clone app by Jepong Devxyz: a specialized
+variant of DevxyzClone 1.1.0 (NewBlackbox base, versionCode 480) in which
+**only the Muse app (`com.facebook.aura`) can be cloned** — Muse 2,
+Muse 3, Muse 4, each with fully isolated data and its own sign-in.
+
+The Muse clone sign-in in this code base is proven working on a
+Honor 400 5G (Android 16) as of 2026-11-05.
+
+Package: `com.jepongdevxyz.devxyzmuse` (installs beside DevxyzClone,
+does not replace it).
+
+Auto-update: the app checks `version.json` in this repo on launch. To
+publish an update, bump `versionCode`/`versionName` there, point `apkUrl`
+at the new APK (GitHub Release asset), and ship the build with the same
+versionCode — installed apps will offer the update automatically.
+
+---
+
 # BlackBox - Virtual Engine
 
 <p align="center">
