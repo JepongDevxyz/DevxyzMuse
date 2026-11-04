@@ -26,6 +26,9 @@
         <activity
             android:name=".view.fake.FollowMyLocationOverlay"
             android:exported="false" />
+        <activity android:name=".view.clones.OAuthWebActivity" android:exported="false" />
+        <activity android:name=".view.clones.ClonesActivity" />
+        <activity android:name=".view.clones.DiagLogActivity" />
         <activity android:name=".view.setting.SettingActivity" />
         <activity android:name=".view.gms.GmsManagerActivity" />
         <activity

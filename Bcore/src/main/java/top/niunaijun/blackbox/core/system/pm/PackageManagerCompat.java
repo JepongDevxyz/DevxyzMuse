@@ -304,6 +304,15 @@ public class PackageManagerCompat {
         ai.processName = BPackageManagerService.fixProcessName(p.packageName, ai.packageName);
         ai.publicSourceDir = sourceDir;
         ai.sourceDir = sourceDir;
+
+
+
+
+        String[] splitSourceDirs = BEnvironment.getInstalledSplitPaths(ai.packageName);
+        if (splitSourceDirs.length > 0) {
+            ai.splitSourceDirs = splitSourceDirs;
+            ai.splitPublicSourceDirs = splitSourceDirs;
+        }
         ai.uid = p.mExtras.appId;
 
 

@@ -139,6 +139,32 @@ public class BEnvironment {
         return new File(sVirtualRoot, "data/app/" + packageName + "/base.apk");
     }
 
+
+    public static File getSplitApkDir(String packageName) {
+        return new File(getAppDir(packageName), "splits");
+    }
+
+    public static File getSplitApkFile(String packageName, String splitFileName) {
+        return new File(getSplitApkDir(packageName), splitFileName);
+    }
+
+
+    public static String[] getInstalledSplitPaths(String packageName) {
+        File dir = getSplitApkDir(packageName);
+        File[] files = dir.listFiles();
+        if (files == null || files.length == 0) {
+            return new String[0];
+        }
+        java.util.Arrays.sort(files);
+        java.util.List<String> paths = new java.util.ArrayList<>(files.length);
+        for (File f : files) {
+            if (f.isFile() && f.getName().endsWith(".apk")) {
+                paths.add(f.getAbsolutePath());
+            }
+        }
+        return paths.toArray(new String[0]);
+    }
+
     public static File getAppLibDir(String packageName) {
         return new File(getAppDir(packageName), "lib");
     }
