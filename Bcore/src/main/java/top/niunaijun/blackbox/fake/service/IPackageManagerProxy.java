@@ -54,9 +54,26 @@ public class IPackageManagerProxy extends BinderInvocationStub {
     // OAuthWebActivity. The cloned Facebook app itself still sees itself
     // (caller == katana), and the host process is unaffected
     // (caller == host).
+    //
+    // DevxyzClone 1.1.1 (native Katana route; see STUDY-KATANA-NATIVE):
+    // the hiding above exists to keep SDKs off the REAL Facebook app.
+    // When Katana itself is CLONED into the caller's virtual user, the
+    // native flow never leaves the container: launches are named with
+    // the guest's own package (ActivityManagerCommonProxy) and Katana
+    // validates the caller from the virtual registry, which answers
+    // with the caller's genuine signatures - the exact property the
+    // Dual Space-style route relies on. So for non-Meta callers the
+    // gate below now lifts when Katana is cloned (native route), and
+    // stays exactly as in 1.1.0 when it is not (OAuth WebView route,
+    // Custom Tabs still killed, no fallthrough to the real app). Meta's
+    // own apps (Muse / Messenger / FB Lite) are caller-keyed OUT of the
+    // lift: their Family SSO probes keep the 1.1.0 hidden/blocked
+    // behavior in every state, and IActivityManagerProxy's Meta
+    // provider block is unchanged.
     private static final String PKG_FACEBOOK_KATANA = "com.facebook.katana";
     private static final String PKG_FACEBOOK_ORCA = "com.facebook.orca";
     private static final String PKG_FACEBOOK_WAKIZASHI = "com.facebook.wakizashi";
+    private static final String PKG_FACEBOOK_AURA = "com.facebook.aura";
     private static final String ACTION_CUSTOM_TABS_SERVICE = "android.support.customtabs.action.CustomTabsService";
 
     private static boolean shouldHideFacebookApp(String queriedPackageName) {
@@ -84,6 +101,95 @@ public class IPackageManagerProxy extends BinderInvocationStub {
         return false;
     }
 
+    // DevxyzClone 1.1.1: Meta's own apps keep the 1.1.0 hidden/blocked
+    // behavior as CALLERS in every state (their Family SSO probes are
+    // what the hiding protects against; see the header comment). Muse
+    // (com.facebook.aura) is the proven case; Orca/Wakizashi callers are
+    // kept on the same side of the line for the same reason.
+    private static boolean isMetaFamilyCaller(String callerPackage) {
+        return PKG_FACEBOOK_AURA.equals(callerPackage)
+                || PKG_FACEBOOK_ORCA.equals(callerPackage)
+                || PKG_FACEBOOK_WAKIZASHI.equals(callerPackage);
+    }
+
+    // DevxyzClone 1.1.1: is Katana installed INSIDE the container for
+    // this virtual user (a clone), as opposed to merely present on the
+    // real device? Only the clone counts - the native route runs
+    // entirely against the cloned app (STUDY-KATANA-NATIVE condition A).
+    private static boolean isKatanaClonedForUser(int userId) {
+        try {
+            return BlackBoxCore.getBPackageManager()
+                    .isInstalled(PKG_FACEBOOK_KATANA, userId);
+        } catch (Throwable ignored) {
+        }
+        return false;
+    }
+
+    // DevxyzClone 1.1.1: the native Katana route is active for the
+    // current caller exactly when the caller is an ordinary clone app
+    // (not Katana itself, not the host, not a Meta-family caller) AND
+    // Katana is cloned into the caller's virtual user. This single
+    // predicate drives the IPM gate, the Custom Tabs decoupling and
+    // (mirrored) the ActivityManagerCommonProxy launch block, so the
+    // three can never drift into the incoherent visible-but-
+    // unlaunchable state the study warns about.
+    private static boolean isKatanaNativeRouteActive() {
+        try {
+            String callerPackage = BActivityThread.getAppPackageName();
+            if (callerPackage == null
+                    || PKG_FACEBOOK_KATANA.equals(callerPackage)
+                    || callerPackage.equals(BlackBoxCore.getHostPkg())
+                    || isMetaFamilyCaller(callerPackage)) {
+                return false;
+            }
+            return isKatanaClonedForUser(BActivityThread.getUserId());
+        } catch (Throwable ignored) {
+        }
+        return false;
+    }
+
+    // DevxyzClone 1.1.1: the Custom Tabs kill guards the WebView OAuth
+    // return seam (STUDY-ML-FB-RETURN), so it is keyed to the OAuth
+    // route being in play for this caller - NOT to Katana visibility.
+    // It stays active for every clone caller on the OAuth route (Katana
+    // not cloned, or a Meta-family caller) and lifts only when the
+    // native route above is active, where Custom Tabs plays no part.
+    // Host/Katana processes keep their 1.1.0 no-kill behavior.
+    private static boolean isCustomTabsDisabledInClone() {
+        try {
+            String callerPackage = BActivityThread.getAppPackageName();
+            if (callerPackage == null
+                    || PKG_FACEBOOK_KATANA.equals(callerPackage)
+                    || callerPackage.equals(BlackBoxCore.getHostPkg())) {
+                return false;
+            }
+            return !isKatanaNativeRouteActive();
+        } catch (Throwable ignored) {
+        }
+        return false;
+    }
+
+    // DevxyzClone 1.1.1 diagnostics: emit the Katana visibility decision
+    // once per (caller, decision, reason) per process, so the DiagLog
+    // shows which route each app was on without flooding on every PM
+    // call. The per-process statics are fine: each clone runs its own
+    // copy of this class.
+    private static volatile String sLastKatanaVisibilityKey;
+
+    private static void diagKatanaVisibility(String callerPackage, boolean hidden, String reason) {
+        try {
+            String key = callerPackage + "|" + hidden + "|" + reason;
+            if (key.equals(sLastKatanaVisibilityKey)) {
+                return;
+            }
+            sLastKatanaVisibilityKey = key;
+            diagLog("katanaVisibility caller=" + callerPackage
+                    + " katana=" + (hidden ? "hidden" : "visible")
+                    + " reason=" + reason);
+        } catch (Throwable ignored) {
+        }
+    }
+
     private static boolean isFacebookAppHiddenFromCurrentApp() {
         try {
             String callerPackage = BActivityThread.getAppPackageName();
@@ -92,6 +198,19 @@ public class IPackageManagerProxy extends BinderInvocationStub {
                     || callerPackage.equals(BlackBoxCore.getHostPkg())) {
                 return false;
             }
+            // DevxyzClone 1.1.1: caller-keyed protection - Meta-family
+            // callers (Muse above all) stay hidden in every state.
+            if (isMetaFamilyCaller(callerPackage)) {
+                diagKatanaVisibility(callerPackage, true, "meta-caller");
+                return true;
+            }
+            // DevxyzClone 1.1.1: coherent un-hide gated on Katana being
+            // cloned into this caller's virtual user (condition A).
+            if (isKatanaNativeRouteActive()) {
+                diagKatanaVisibility(callerPackage, false, "katana-cloned");
+                return false;
+            }
+            diagKatanaVisibility(callerPackage, true, "katana-not-cloned");
             return true;
         } catch (Throwable ignored) {
         }
@@ -380,12 +499,16 @@ public class IPackageManagerProxy extends BinderInvocationStub {
             // Round 4 (ported): Katana services stay hidden, and Custom
             // Tabs must look unsupported inside clones (its OAuth redirect
             // cannot return here).
+            // DevxyzClone 1.1.1: the two kills are decoupled - the Katana
+            // service kill follows the visibility gate (lifts when the
+            // native route is active), the Custom Tabs kill follows the
+            // OAuth route being in play for this caller.
             if (shouldHideFacebookService(intent)) {
                 diagLog("resolveService caller=" + BlackBoxCore.getAppPackageName()
                         + " " + diagIntentSummary(intent) + " -> null (katana hidden)");
                 return null;
             }
-            if (isCustomTabsServiceIntent(intent) && isFacebookAppHiddenFromCurrentApp()) {
+            if (isCustomTabsServiceIntent(intent) && isCustomTabsDisabledInClone()) {
                 diagLog("resolveService caller=" + BlackBoxCore.getAppPackageName()
                         + " " + diagIntentSummary(intent) + " -> null (custom tabs disabled in clones)");
                 return null;
@@ -501,10 +624,22 @@ public class IPackageManagerProxy extends BinderInvocationStub {
         @SuppressWarnings("unchecked")
         protected Object hook(Object who, Method method, Object[] args) throws Throwable {
             Intent intent = MethodParameterUtils.getFirstParam(args, Intent.class);
+            // DevxyzClone 1.1.1: decoupled like ResolveService - Katana
+            // service queries follow the visibility gate, Custom Tabs
+            // service queries follow the OAuth-route predicate.
             if (intent != null && isFacebookAppHiddenFromCurrentApp()
-                    && (shouldHideFacebookService(intent) || isCustomTabsServiceIntent(intent))) {
+                    && shouldHideFacebookService(intent)) {
                 diagLog("queryIntentServices caller=" + BlackBoxCore.getAppPackageName()
                         + " " + diagIntentSummary(intent) + " -> [] (hidden in clones)");
+                if (BuildCompat.isN()) {
+                    return ParceledListSliceCompat.create(new ArrayList<ResolveInfo>());
+                }
+                return new ArrayList<ResolveInfo>();
+            }
+            if (intent != null && isCustomTabsServiceIntent(intent)
+                    && isCustomTabsDisabledInClone()) {
+                diagLog("queryIntentServices caller=" + BlackBoxCore.getAppPackageName()
+                        + " " + diagIntentSummary(intent) + " -> [] (custom tabs disabled in clones)");
                 if (BuildCompat.isN()) {
                     return ParceledListSliceCompat.create(new ArrayList<ResolveInfo>());
                 }
@@ -563,6 +698,23 @@ public class IPackageManagerProxy extends BinderInvocationStub {
             PackageInfo packageInfo = BlackBoxCore.getBPackageManager().getPackageInfo(packageName, flags, BlackBoxCore.getUserId());
             if (packageInfo != null) {
                 
+                // DevxyzClone 1.1.1 (STUDY-KATANA-NATIVE condition B;
+                // ported back from the frozen fork's round 1, where this
+                // exact block shipped in GetPackageInfo): a virtual app
+                // that asks for the HOST package's info is almost always
+                // asking about ITSELF through the proxy identity (its
+                // framework package name is the host's). SDKs such as
+                // Facebook Login compute the app's key hash from these
+                // signatures; returning the host's real signatures makes
+                // the SDK present the host's identity and the login is
+                // rejected ("Invalid key hash"). Substitute the current
+                // virtual app's own signatures so the app presents its
+                // genuine signing identity, exactly as on a real device.
+                if (packageName != null && packageName.equals(BlackBoxCore.getHostPkg())
+                        && shouldAttachSigningInfo(flags)) {
+                    replaceSignaturesWithCurrentApp(packageInfo, flags);
+                }
+
                 if (packageInfo.requestedPermissions != null && packageInfo.requestedPermissionsFlags != null) {
                     for (int i = 0; i < packageInfo.requestedPermissions.length; i++) {
                         String perm = packageInfo.requestedPermissions[i];
@@ -577,11 +729,77 @@ public class IPackageManagerProxy extends BinderInvocationStub {
                 return packageInfo;
             }
             if (AppSystemEnv.isOpenPackage(packageName)) {
-                return method.invoke(who, args);
+                Object result = method.invoke(who, args);
+                // DevxyzClone 1.1.1 (condition B): same self-identity fix
+                // for the passthrough path - never let the host's real
+                // signatures reach a virtual app asking about itself.
+                if (result instanceof PackageInfo && packageName != null
+                        && packageName.equals(BlackBoxCore.getHostPkg())
+                        && shouldAttachSigningInfo(flags)) {
+                    replaceSignaturesWithCurrentApp((PackageInfo) result, flags);
+                }
+                return result;
             }
             return null;
         }
         
+        private boolean shouldAttachSigningInfo(int flags) {
+            // GET_SIGNATURES is deprecated but still used by some libs.
+            final int GET_SIGNATURES = 0x00000040;
+            // GET_SIGNING_CERTIFICATES replaces GET_SIGNATURES on P+.
+            final int GET_SIGNING_CERTIFICATES = 0x08000000;
+            return (flags & (GET_SIGNATURES | GET_SIGNING_CERTIFICATES)) != 0;
+        }
+
+        private void attachSigningInfo(PackageInfo target, PackageInfo source) {
+            if (target == null || source == null) {
+                return;
+            }
+            try {
+                if (source.signingInfo != null) {
+                    target.signingInfo = source.signingInfo;
+                }
+            } catch (Throwable ignored) {
+            }
+            try {
+                if (source.signatures != null && source.signatures.length > 0) {
+                    target.signatures = source.signatures;
+                }
+            } catch (Throwable ignored) {
+            }
+        }
+
+        // DevxyzClone fix (round 1 in the frozen fork, ported back in
+        // 1.1.1 per STUDY-KATANA-NATIVE condition B): replace a
+        // PackageInfo's signatures with the current virtual app's own
+        // signatures (see the call sites in hook() above). No-op in the
+        // host process itself, where the "current app" IS the host.
+        private void replaceSignaturesWithCurrentApp(PackageInfo target, int flags) {
+            if (target == null) {
+                return;
+            }
+            try {
+                String hostPkg = BlackBoxCore.getHostPkg();
+                String currentPkg = BlackBoxCore.getAppPackageName();
+                if (hostPkg == null || currentPkg == null || hostPkg.equals(currentPkg)) {
+                    return;
+                }
+                PackageInfo own = BlackBoxCore.getBPackageManager()
+                        .getPackageInfo(currentPkg, flags, BlackBoxCore.getUserId());
+                if (own == null) {
+                    return;
+                }
+                attachSigningInfo(target, own);
+                // DevxyzClone 1.1.1 diagnostics: record that a host-
+                // package answer left with the caller's own identity.
+                diagLog("getPackageInfo sigSubst applied caller=" + currentPkg
+                        + " q=" + hostPkg
+                        + " sigHash=" + diagKeyHash(target.signatures)
+                        + " signingInfoHash=" + diagSigningInfoHash(target.signingInfo));
+            } catch (Throwable ignored) {
+            }
+        }
+
         private PackageInfo createFakeGooglePlayServicesPackageInfo() {
             PackageInfo packageInfo = new PackageInfo();
             packageInfo.packageName = "com.android.vending";
@@ -602,8 +820,10 @@ public class IPackageManagerProxy extends BinderInvocationStub {
 
     // Ported: absent from stock NewBlackbox - this AIDL entry point
     // otherwise bypasses the Katana hiding entirely with real signatures.
-    // (The old base's host-signature substitution block is deliberately
-    // NOT ported; see PORT-REPORT.)
+    // (The old base's host-signature substitution block was deliberately
+    // NOT ported in 1.1.0; DevxyzClone 1.1.1 ports it back per
+    // STUDY-KATANA-NATIVE condition B - see the inline block below and
+    // GetPackageInfo's replaceSignaturesWithCurrentApp.)
     @ProxyMethod("getPackageInfoVersioned")
     public static class GetPackageInfoVersioned extends MethodHook {
         @Override
@@ -623,6 +843,34 @@ public class IPackageManagerProxy extends BinderInvocationStub {
             PackageInfo packageInfo = BlackBoxCore.getBPackageManager()
                     .getPackageInfo(packageName, flags, BlackBoxCore.getUserId());
             if (packageInfo != null) {
+                // DevxyzClone 1.1.1 (condition B): same host-signature
+                // substitution as GetPackageInfo, in the frozen fork's
+                // inline form for this entry point - host-package answers
+                // carry the caller's own signatures.
+                if (packageName.equals(BlackBoxCore.getHostPkg())
+                        && (flags & (0x00000040 | 0x08000000)) != 0) {
+                    try {
+                        String cur = BlackBoxCore.getAppPackageName();
+                        String host = BlackBoxCore.getHostPkg();
+                        if (cur != null && host != null && !host.equals(cur)) {
+                            PackageInfo own = BlackBoxCore.getBPackageManager()
+                                    .getPackageInfo(cur, flags, BlackBoxCore.getUserId());
+                            if (own != null) {
+                                if (own.signingInfo != null) {
+                                    packageInfo.signingInfo = own.signingInfo;
+                                }
+                                if (own.signatures != null && own.signatures.length > 0) {
+                                    packageInfo.signatures = own.signatures;
+                                }
+                                diagLog("getPackageInfoVersioned sigSubst applied caller=" + cur
+                                        + " q=" + packageName
+                                        + " sigHash=" + diagKeyHash(packageInfo.signatures)
+                                        + " signingInfoHash=" + diagSigningInfoHash(packageInfo.signingInfo));
+                            }
+                        }
+                    } catch (Throwable ignored) {
+                    }
+                }
                 return packageInfo;
             }
             if (AppSystemEnv.isOpenPackage(packageName)) {
