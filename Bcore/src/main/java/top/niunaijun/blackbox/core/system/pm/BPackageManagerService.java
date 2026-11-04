@@ -41,6 +41,7 @@ import top.niunaijun.blackbox.entity.pm.InstallOption;
 import top.niunaijun.blackbox.entity.pm.InstallResult;
 import top.niunaijun.blackbox.entity.pm.InstalledPackage;
 import top.niunaijun.blackbox.utils.AbiUtils;
+import top.niunaijun.blackbox.utils.DiagLog;
 import top.niunaijun.blackbox.utils.FileUtils;
 import top.niunaijun.blackbox.utils.Slog;
 import top.niunaijun.blackbox.utils.compat.PackageParserCompat;
@@ -645,6 +646,17 @@ public class BPackageManagerService extends IBPackageManagerService.Stub impleme
         }
     }
 
+    // DevxyzClone (ported from the frozen Blacks-BlackBox fork, 1.0.11):
+    // compact stack trace for DiagLog lines (the log view is line-based;
+    // keep the throwable + its frames in one entry, capped so one failure
+    // cannot flood the log).
+    private static String stackTraceOf(Throwable t) {
+        java.io.StringWriter sw = new java.io.StringWriter();
+        t.printStackTrace(new java.io.PrintWriter(sw));
+        String s = sw.toString().replace('\n', ' ').replace('\r', ' ');
+        return s.length() > 3000 ? s.substring(0, 3000) : s;
+    }
+
     private InstallResult installPackageAsUserLocked(String file, InstallOption option, int userId) {
         long l = System.currentTimeMillis();
         InstallResult result = new InstallResult();
@@ -692,17 +704,110 @@ public class BPackageManagerService extends IBPackageManagerService.Stub impleme
             if (aPackage == null) {
                 return result.installError("parser apk error.");
             }
+            // DevxyzClone 1.0.12 (ported): the parser can return a bogus
+            // package identity for split-delivered system apps - on real
+            // devices (Pixel 5 / Android 14, Pixel 10 / Android 16) parsing
+            // the GMS base.apk yields a Dynamite split name
+            // (com.google.android.gms.dynamite_cronetdynamite) instead of
+            // the real package name, and every downstream step (the
+            // FLAG_SYSTEM swap below, getPackageLPw, scanPackage) then
+            // queries/registers the WRONG name, so GMS never registers
+            // under its real name. packageArchiveInfo was read by the real
+            // PackageManager above and carries the true name - trust it
+            // over the parser whenever they disagree, and log the pair so
+            // the device log proves what the parser produced.
+            if (packageArchiveInfo.packageName != null
+                    && !packageArchiveInfo.packageName.equals(aPackage.packageName)) {
+                DiagLog.log("bpms-install parsed-name mismatch file=" + apkFile.getName()
+                        + " parsed=" + aPackage.packageName
+                        + " archive=" + packageArchiveInfo.packageName
+                        + " : using archive name");
+                aPackage.packageName = packageArchiveInfo.packageName;
+            }
+            // DevxyzClone 1.0.13 (ported): the 1.0.12 Kobiton run proved
+            // that for GMS, BOTH in-server name reads (the real PM's
+            // archive info above and the vendored parser) can agree on the
+            // same WRONG identity - a Dynamite split name - so no in-server
+            // source can correct the parsed name. The one source proven
+            // true on real devices is the caller's own request:
+            // BlackBoxCore.installPackageAsUser(String) resolved the
+            // package BY NAME through the real PM before calling us, and
+            // threads that name through InstallOption. When a requested
+            // name is present on a FLAG_SYSTEM install, log the full
+            // identity picture and FORCE the requested name: registration
+            // keys, the FLAG_SYSTEM swap below and scanPackage all follow
+            // aPackage.packageName, and the parsed ApplicationInfo must
+            // carry the same name.
+            String requestedName = option.packageName;
+            if (option.isFlag(InstallOption.FLAG_SYSTEM) && requestedName != null) {
+                DiagLog.log("bpms-install identity file=" + apkFile.getName()
+                        + " parsed=" + aPackage.packageName
+                        + " archive=" + packageArchiveInfo.packageName
+                        + " requested=" + requestedName);
+                if (!requestedName.equals(aPackage.packageName)) {
+                    DiagLog.log("bpms-install identity forced file=" + apkFile.getName()
+                            + " parsed=" + aPackage.packageName
+                            + " requested=" + requestedName
+                            + " : using requested name");
+                    aPackage.packageName = requestedName;
+                }
+                if (aPackage.applicationInfo != null
+                        && !aPackage.packageName.equals(aPackage.applicationInfo.packageName)) {
+                    aPackage.applicationInfo.packageName = aPackage.packageName;
+                }
+            }
             result.packageName = aPackage.packageName;
 
             if (option.isFlag(InstallOption.FLAG_SYSTEM)) {
-                aPackage.applicationInfo = BlackBoxCore.getPackageManager().getPackageInfo(aPackage.packageName, 0).applicationInfo;
+                // DevxyzClone 1.0.12 (ported): import the host's real
+                // ApplicationInfo (its splitSourceDirs point at the host's
+                // split APKs - the guest classloader loads them from
+                // there, see BActivityThread). Use getApplicationInfo: it
+                // is the exact call already proven to succeed for GMS on
+                // real devices, and guard it - a swap failure must never
+                // again kill the whole install; the parsed
+                // ApplicationInfo stays as fallback and the failure is
+                // logged with its stack.
+                try {
+                    aPackage.applicationInfo = BlackBoxCore.getPackageManager().getApplicationInfo(aPackage.packageName, 0);
+                } catch (Throwable swapError) {
+                    DiagLog.log("bpms-install system-swap failed pkg=" + aPackage.packageName
+                            + " : " + stackTraceOf(swapError)
+                            + " (keeping parsed applicationInfo)");
+                }
             }
             BPackageSettings bPackageSettings = mSettings.getPackageLPw(aPackage.packageName, aPackage, option);
 
             
             BProcessManagerService.get().killPackageAsUser(aPackage.packageName, userId);
 
-            int i = BPackageInstallerService.get().installPackageAsUser(bPackageSettings, userId);
+            // DevxyzClone 1.0.11 (ported): the installer step used to be
+            // able to kill the WHOLE registration with one exception -
+            // installing GMS (FLAG_SYSTEM) throws NameNotFoundException
+            // for its Dynamite module
+            // (com.google.android.gms.dynamite_cronetdynamite, a
+            // split-module name, not a real package), so GMS never
+            // reached setInstalled() below and isInstalled(GMS) stayed
+            // false forever while the caller still saw success. For
+            // FLAG_SYSTEM installs the files already live on the host
+            // (nothing to copy), so a failure inside the installer step
+            // must NOT abort registration: log it with a stack trace and
+            // continue. For other installs the failure is real - report
+            // it honestly.
+            int i;
+            try {
+                i = BPackageInstallerService.get().installPackageAsUser(bPackageSettings, userId);
+            } catch (Throwable installerError) {
+                DiagLog.log("bpms-install installer exception pkg=" + aPackage.packageName
+                        + " : " + stackTraceOf(installerError));
+                if (option.isFlag(InstallOption.FLAG_SYSTEM)) {
+                    DiagLog.log("bpms-install: continuing registration for system pkg="
+                            + aPackage.packageName);
+                    i = 0;
+                } else {
+                    return result.installError("installer exception: " + installerError);
+                }
+            }
             if (i < 0) {
                 return result.installError("install apk error.");
             }
@@ -710,13 +815,30 @@ public class BPackageManagerService extends IBPackageManagerService.Stub impleme
                 bPackageSettings.setInstalled(true, userId);
                 bPackageSettings.save();
             }
-            mComponentResolver.removeAllComponents(bPackageSettings.pkg);
-            mComponentResolver.addAllComponents(bPackageSettings.pkg);
-            mSettings.scanPackage(aPackage.packageName);
-            onPackageInstalled(bPackageSettings.pkg.packageName, userId);
+            // Component registration is guarded too: a failure resolving
+            // one component/module must not unregister a package whose
+            // settings are already saved above. It is logged loudly
+            // instead.
+            try {
+                mComponentResolver.removeAllComponents(bPackageSettings.pkg);
+                mComponentResolver.addAllComponents(bPackageSettings.pkg);
+                mSettings.scanPackage(aPackage.packageName);
+                onPackageInstalled(bPackageSettings.pkg.packageName, userId);
+            } catch (Throwable registrationError) {
+                DiagLog.log("bpms-install registration exception pkg=" + aPackage.packageName
+                        + " : " + stackTraceOf(registrationError));
+            }
             return result;
         } catch (Throwable t) {
+            // DevxyzClone 1.0.11 (ported): log the FULL stack trace and
+            // turn the result into an honest failure (delivered by the
+            // return after the finally block). The stock behaviour logged
+            // only the message and still returned a default success=true
+            // InstallResult - the lie that hid the GMS registration
+            // failure for two rounds.
+            DiagLog.log("bpms-install exception file=" + file + " : " + stackTraceOf(t));
             t.printStackTrace();
+            result = result.installError("install exception: " + t);
         } finally {
             if (apkFile != null && option.isFlag(InstallOption.FLAG_URI_FILE)) {
                 FileUtils.deleteDir(apkFile);

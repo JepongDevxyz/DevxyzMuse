@@ -31,6 +31,7 @@ import top.niunaijun.blackbox.fake.hook.MethodHook;
 import top.niunaijun.blackbox.fake.hook.ProxyMethod;
 import top.niunaijun.blackbox.fake.service.base.PkgMethodProxy;
 import top.niunaijun.blackbox.fake.service.base.ValueMethodProxy;
+import top.niunaijun.blackbox.utils.DiagLog;
 import top.niunaijun.blackbox.utils.MethodParameterUtils;
 import top.niunaijun.blackbox.utils.Reflector;
 import top.niunaijun.blackbox.utils.Slog;
@@ -40,6 +41,229 @@ import top.niunaijun.blackbox.utils.compat.ParceledListSliceCompat;
 
 public class IPackageManagerProxy extends BinderInvocationStub {
     public static final String TAG = "PackageManagerStub";
+
+    // ===== DevxyzClone Facebook/Meta stack (ported from the frozen
+    // Blacks-BlackBox fork, rounds 2/4/7 + 1.0.10) =====
+    // Facebook SDKs inside a clone prefer the native Katana flow when the
+    // real Facebook app is visible; that flow validates the CALLING app
+    // from OUTSIDE the container, where the caller is the host's proxy
+    // activity, so the key hash Facebook computes is the host's and login
+    // is rejected ("Invalid key hash" / "Something went wrong"). When
+    // Katana is invisible, SDKs fall back to the web dialog flow, which
+    // ActivityManagerCommonProxy rewrites into the in-container
+    // OAuthWebActivity. The cloned Facebook app itself still sees itself
+    // (caller == katana), and the host process is unaffected
+    // (caller == host).
+    private static final String PKG_FACEBOOK_KATANA = "com.facebook.katana";
+    private static final String PKG_FACEBOOK_ORCA = "com.facebook.orca";
+    private static final String PKG_FACEBOOK_WAKIZASHI = "com.facebook.wakizashi";
+    private static final String ACTION_CUSTOM_TABS_SERVICE = "android.support.customtabs.action.CustomTabsService";
+
+    private static boolean shouldHideFacebookApp(String queriedPackageName) {
+        if (!PKG_FACEBOOK_KATANA.equals(queriedPackageName)) {
+            return false;
+        }
+        return isFacebookAppHiddenFromCurrentApp();
+    }
+
+    private static boolean shouldHideFacebookApp(Intent intent) {
+        if (intent == null) {
+            return false;
+        }
+        try {
+            String targetPackage = intent.getPackage();
+            if (targetPackage == null) {
+                ComponentName cn = intent.getComponent();
+                if (cn != null) {
+                    targetPackage = cn.getPackageName();
+                }
+            }
+            return shouldHideFacebookApp(targetPackage);
+        } catch (Throwable ignored) {
+        }
+        return false;
+    }
+
+    private static boolean isFacebookAppHiddenFromCurrentApp() {
+        try {
+            String callerPackage = BActivityThread.getAppPackageName();
+            if (callerPackage == null
+                    || PKG_FACEBOOK_KATANA.equals(callerPackage)
+                    || callerPackage.equals(BlackBoxCore.getHostPkg())) {
+                return false;
+            }
+            return true;
+        } catch (Throwable ignored) {
+        }
+        return false;
+    }
+
+    private static boolean isMetaPackage(String pkg) {
+        return PKG_FACEBOOK_KATANA.equals(pkg) || PKG_FACEBOOK_ORCA.equals(pkg)
+                || PKG_FACEBOOK_WAKIZASHI.equals(pkg);
+    }
+
+    private static boolean isMetaProviderAuthority(String authority) {
+        return authority != null && (authority.startsWith(PKG_FACEBOOK_KATANA)
+                || authority.startsWith(PKG_FACEBOOK_ORCA)
+                || authority.startsWith(PKG_FACEBOOK_WAKIZASHI));
+    }
+
+    // Is this intent a PackageManager probe for a Facebook Login redirect
+    // URI (fb<appid>://authorize or fbconnect://cct.<package>)? The SDK's
+    // Validate.hasCustomTabRedirectActivity runs exactly this query.
+    // Since 1.0.10 these probes are answered truthfully by the virtual
+    // registry (hiding them made the SDK conclude NO login handler
+    // exists); the predicate now only drives DiagLog lines.
+    private static boolean isFacebookRedirectQuery(Intent intent) {
+        if (intent == null || !isFacebookAppHiddenFromCurrentApp()) {
+            return false;
+        }
+        try {
+            android.net.Uri data = intent.getData();
+            if (data == null) {
+                return false;
+            }
+            String scheme = data.getScheme();
+            if (scheme == null) {
+                return false;
+            }
+            if (scheme.length() > 2 && scheme.charAt(0) == 'f'
+                    && scheme.charAt(1) == 'b' && Character.isDigit(scheme.charAt(2))) {
+                return true;
+            }
+            if ("fbconnect".equals(scheme)) {
+                String host = data.getHost();
+                return host != null && host.startsWith("cct.");
+            }
+        } catch (Throwable ignored) {
+        }
+        return false;
+    }
+
+    private static boolean isCustomTabsServiceIntent(Intent intent) {
+        return intent != null && ACTION_CUSTOM_TABS_SERVICE.equals(intent.getAction());
+    }
+
+    private static boolean shouldHideFacebookService(Intent intent) {
+        if (intent == null) {
+            return false;
+        }
+        if (shouldHideFacebookApp(intent)) {
+            return true;
+        }
+        try {
+            String act = intent.getAction();
+            return act != null && (act.startsWith("com.facebook.katana.")
+                    || act.startsWith("com.facebook.platform."))
+                    && isFacebookAppHiddenFromCurrentApp();
+        } catch (Throwable ignored) {
+        }
+        return false;
+    }
+
+    private static List<ResolveInfo> filterOutFacebookServices(List<ResolveInfo> resolves) {
+        if (resolves == null || resolves.isEmpty()) {
+            return resolves;
+        }
+        ArrayList<ResolveInfo> filtered = new ArrayList<>(resolves.size());
+        for (ResolveInfo ri : resolves) {
+            if (ri == null) {
+                continue;
+            }
+            ServiceInfo si = ri.serviceInfo;
+            if (si != null && PKG_FACEBOOK_KATANA.equals(si.packageName)) {
+                continue;
+            }
+            filtered.add(ri);
+        }
+        return filtered;
+    }
+
+    private static List<ResolveInfo> filterOutFacebookActivities(List<ResolveInfo> resolves) {
+        if (resolves == null || resolves.isEmpty()) {
+            return resolves;
+        }
+        ArrayList<ResolveInfo> filtered = new ArrayList<>(resolves.size());
+        for (ResolveInfo ri : resolves) {
+            if (ri == null) {
+                continue;
+            }
+            ActivityInfo ai = ri.activityInfo;
+            if (ai != null && PKG_FACEBOOK_KATANA.equals(ai.packageName)) {
+                continue;
+            }
+            filtered.add(ri);
+        }
+        return filtered;
+    }
+
+    // DevxyzClone diagnostics: one line per relevant PackageManager event
+    // inside cloned apps, into the shared DiagLog sink, so the exact
+    // identity answers given to SDKs can be inspected after a phone test.
+    private static void diagLog(String msg) {
+        DiagLog.log(msg);
+    }
+
+    private static String diagKeyHash(android.content.pm.Signature[] sigs) {
+        if (sigs == null || sigs.length == 0) {
+            return "none";
+        }
+        try {
+            java.security.MessageDigest md = java.security.MessageDigest.getInstance("SHA-1");
+            byte[] digest = md.digest(sigs[0].toByteArray());
+            return android.util.Base64.encodeToString(digest, android.util.Base64.NO_WRAP);
+        } catch (Throwable t) {
+            return "err";
+        }
+    }
+
+    private static String diagSigningInfoHash(android.content.pm.SigningInfo si) {
+        if (si == null) {
+            return "none";
+        }
+        try {
+            return diagKeyHash(si.getApkContentsSigners());
+        } catch (Throwable t) {
+            return "err";
+        }
+    }
+
+    private static boolean diagIsFacebookIntent(Intent intent) {
+        if (intent == null) {
+            return false;
+        }
+        try {
+            StringBuilder sb = new StringBuilder();
+            if (intent.getPackage() != null) {
+                sb.append(intent.getPackage()).append(' ');
+            }
+            if (intent.getComponent() != null) {
+                sb.append(intent.getComponent().flattenToShortString()).append(' ');
+            }
+            if (intent.getAction() != null) {
+                sb.append(intent.getAction()).append(' ');
+            }
+            if (intent.getDataString() != null) {
+                sb.append(intent.getDataString());
+            }
+            String s = sb.toString().toLowerCase();
+            return s.contains("facebook") || s.contains("katana") || s.contains("customtab");
+        } catch (Throwable ignored) {
+        }
+        return false;
+    }
+
+    private static String diagIntentSummary(Intent intent) {
+        try {
+            return "pkg=" + intent.getPackage()
+                    + " cmp=" + (intent.getComponent() != null ? intent.getComponent().flattenToShortString() : null)
+                    + " act=" + intent.getAction()
+                    + " data=" + intent.getDataString();
+        } catch (Throwable t) {
+            return "err";
+        }
+    }
 
     public IPackageManagerProxy() {
         super(BRActivityThread.get().sPackageManager().asBinder());
@@ -93,13 +317,56 @@ public class IPackageManagerProxy extends BinderInvocationStub {
         @Override
         protected Object hook(Object who, Method method, Object[] args) throws Throwable {
             Intent intent = (Intent) args[0];
+
+            // DevxyzClone fix (round 2, ported): intents aimed at the real
+            // Facebook app must not resolve for clones.
+            if (shouldHideFacebookApp(intent)) {
+                diagLog("resolveIntent caller=" + BlackBoxCore.getAppPackageName()
+                        + " " + diagIntentSummary(intent) + " -> null (katana hidden)");
+                return null;
+            }
+
+            // DevxyzClone 1.0.10 (ported): FB redirect-URI probes are
+            // answered truthfully by the virtual registry below (hiding
+            // them made the SDK conclude no login handler exists); this
+            // line records the probe so the log shows what followed.
+            if (isFacebookRedirectQuery(intent)) {
+                diagLog("resolveIntent caller=" + BlackBoxCore.getAppPackageName()
+                        + " " + diagIntentSummary(intent)
+                        + " (FB redirect probe: passing through to virtual registry)");
+            }
+
             String resolvedType = (String) args[1];
             int flags = MethodParameterUtils.toInt(args[2]);
             ResolveInfo resolveInfo = BlackBoxCore.getBPackageManager().resolveIntent(intent, resolvedType, flags, BlackBoxCore.getUserId());
             if (resolveInfo != null) {
+                if (diagIsFacebookIntent(intent)) {
+                    diagLog("resolveIntent caller=" + BlackBoxCore.getAppPackageName()
+                            + " " + diagIntentSummary(intent) + " -> virtual "
+                            + (resolveInfo.activityInfo != null ? resolveInfo.activityInfo.packageName : null));
+                }
                 return resolveInfo;
             }
-            return method.invoke(who, args);
+            MethodParameterUtils.replaceUserIdIfNeeded(args, args.length - 1);
+            Object hostOut = method.invoke(who, args);
+            // Implicit intents can still land on Katana through the host
+            // result; suppress that too so the SDK takes the web flow.
+            if (hostOut instanceof ResolveInfo && isFacebookAppHiddenFromCurrentApp()) {
+                ResolveInfo hostRi = (ResolveInfo) hostOut;
+                if (hostRi.activityInfo != null
+                        && PKG_FACEBOOK_KATANA.equals(hostRi.activityInfo.packageName)) {
+                    diagLog("resolveIntent caller=" + BlackBoxCore.getAppPackageName()
+                            + " " + diagIntentSummary(intent) + " -> null (katana host result suppressed)");
+                    return null;
+                }
+            }
+            if (diagIsFacebookIntent(intent)) {
+                diagLog("resolveIntent caller=" + BlackBoxCore.getAppPackageName()
+                        + " " + diagIntentSummary(intent) + " -> "
+                        + (hostOut instanceof ResolveInfo && ((ResolveInfo) hostOut).activityInfo != null
+                            ? ((ResolveInfo) hostOut).activityInfo.packageName : String.valueOf(hostOut)));
+            }
+            return hostOut;
         }
     }
 
@@ -110,11 +377,161 @@ public class IPackageManagerProxy extends BinderInvocationStub {
             Intent intent = (Intent) args[0];
             String resolvedType = (String) args[1];
             int flags = MethodParameterUtils.toInt(args[2]);
+            // Round 4 (ported): Katana services stay hidden, and Custom
+            // Tabs must look unsupported inside clones (its OAuth redirect
+            // cannot return here).
+            if (shouldHideFacebookService(intent)) {
+                diagLog("resolveService caller=" + BlackBoxCore.getAppPackageName()
+                        + " " + diagIntentSummary(intent) + " -> null (katana hidden)");
+                return null;
+            }
+            if (isCustomTabsServiceIntent(intent) && isFacebookAppHiddenFromCurrentApp()) {
+                diagLog("resolveService caller=" + BlackBoxCore.getAppPackageName()
+                        + " " + diagIntentSummary(intent) + " -> null (custom tabs disabled in clones)");
+                return null;
+            }
             ResolveInfo resolveInfo = BlackBoxCore.getBPackageManager().resolveService(intent, flags, resolvedType, BlackBoxCore.getUserId());
             if (resolveInfo != null) {
                 return resolveInfo;
             }
-            return method.invoke(who, args);
+            MethodParameterUtils.replaceUserIdIfNeeded(args, args.length - 1);
+            Object hostOut = method.invoke(who, args);
+            if (hostOut instanceof ResolveInfo && isFacebookAppHiddenFromCurrentApp()) {
+                ResolveInfo hostRi = (ResolveInfo) hostOut;
+                if (hostRi.serviceInfo != null
+                        && PKG_FACEBOOK_KATANA.equals(hostRi.serviceInfo.packageName)) {
+                    diagLog("resolveService caller=" + BlackBoxCore.getAppPackageName()
+                            + " " + diagIntentSummary(intent) + " -> null (katana host result suppressed)");
+                    return null;
+                }
+            }
+            return hostOut;
+        }
+    }
+
+    // Ported: this hook does not exist in stock NewBlackbox, so without it
+    // a clone's queryIntentActivities was answered by the REAL
+    // PackageManager (Katana and SetupWizard fully visible to SDK probes).
+    @ProxyMethod("queryIntentActivities")
+    public static class QueryIntentActivities extends MethodHook {
+        @Override
+        @SuppressWarnings("unchecked")
+        protected Object hook(Object who, Method method, Object[] args) throws Throwable {
+            Intent intent = MethodParameterUtils.getFirstParam(args, Intent.class);
+            String type = MethodParameterUtils.getFirstParam(args, String.class);
+            Integer flags = MethodParameterUtils.getFirstParam(args, Integer.class);
+
+            // DevxyzClone 1.0.10 (ported): FB redirect probes pass through
+            // to the virtual registry (see ResolveIntent); log only.
+            if (isFacebookRedirectQuery(intent)) {
+                diagLog("queryIntentActivities caller=" + BlackBoxCore.getAppPackageName()
+                        + " " + diagIntentSummary(intent)
+                        + " (FB redirect probe: passing through to virtual registry)");
+            }
+
+            List<ResolveInfo> resolves = BlackBoxCore.getBPackageManager()
+                    .queryIntentActivities(intent, flags, type, BActivityThread.getUserId());
+
+            if (resolves != null && !resolves.isEmpty()) {
+                // DevxyzClone fix (round 2, ported): strip the real
+                // Facebook app from results.
+                if (isFacebookAppHiddenFromCurrentApp()) {
+                    resolves = filterOutFacebookActivities(resolves);
+                }
+                if (diagIsFacebookIntent(intent)) {
+                    StringBuilder pkgs = new StringBuilder();
+                    for (ResolveInfo ri : resolves) {
+                        if (ri != null && ri.activityInfo != null) {
+                            pkgs.append(ri.activityInfo.packageName).append(',');
+                        }
+                    }
+                    diagLog("queryIntentActivities caller=" + BlackBoxCore.getAppPackageName()
+                            + " " + diagIntentSummary(intent) + " -> virtual [" + pkgs + "]");
+                }
+                if (BuildCompat.isN()) {
+                    return ParceledListSliceCompat.create(resolves);
+                }
+                return resolves;
+            }
+
+            MethodParameterUtils.replaceUserIdIfNeeded(args, args.length - 1);
+            Object hostOut = method.invoke(who, args);
+
+            if (!isFacebookAppHiddenFromCurrentApp()) {
+                return hostOut;
+            }
+
+            List<ResolveInfo> hostList = null;
+            if (hostOut instanceof List) {
+                hostList = (List<ResolveInfo>) hostOut;
+            } else if (ParceledListSliceCompat.isParceledListSlice(hostOut)) {
+                try {
+                    hostList = Reflector.with(hostOut).method("getList").call();
+                } catch (Throwable ignored) {
+                }
+            }
+
+            hostList = filterOutFacebookActivities(hostList);
+            if (diagIsFacebookIntent(intent)) {
+                StringBuilder pkgs = new StringBuilder();
+                if (hostList != null) {
+                    for (ResolveInfo ri : hostList) {
+                        if (ri != null && ri.activityInfo != null) {
+                            pkgs.append(ri.activityInfo.packageName).append(',');
+                        }
+                    }
+                }
+                diagLog("queryIntentActivities caller=" + BlackBoxCore.getAppPackageName()
+                        + " " + diagIntentSummary(intent) + " -> host [" + pkgs + "]");
+            }
+            if (hostList == null) {
+                return hostOut;
+            }
+            if (BuildCompat.isN()) {
+                return ParceledListSliceCompat.create(hostList);
+            }
+            return hostList;
+        }
+    }
+
+    // Ported: also absent from stock NewBlackbox.
+    @ProxyMethod("queryIntentServices")
+    public static class QueryIntentServices extends MethodHook {
+        @Override
+        @SuppressWarnings("unchecked")
+        protected Object hook(Object who, Method method, Object[] args) throws Throwable {
+            Intent intent = MethodParameterUtils.getFirstParam(args, Intent.class);
+            if (intent != null && isFacebookAppHiddenFromCurrentApp()
+                    && (shouldHideFacebookService(intent) || isCustomTabsServiceIntent(intent))) {
+                diagLog("queryIntentServices caller=" + BlackBoxCore.getAppPackageName()
+                        + " " + diagIntentSummary(intent) + " -> [] (hidden in clones)");
+                if (BuildCompat.isN()) {
+                    return ParceledListSliceCompat.create(new ArrayList<ResolveInfo>());
+                }
+                return new ArrayList<ResolveInfo>();
+            }
+            MethodParameterUtils.replaceUserIdIfNeeded(args, args.length - 1);
+            Object hostOut = method.invoke(who, args);
+            if (!isFacebookAppHiddenFromCurrentApp()) {
+                return hostOut;
+            }
+            List<ResolveInfo> hostList = null;
+            if (hostOut instanceof List) {
+                hostList = (List<ResolveInfo>) hostOut;
+            } else if (ParceledListSliceCompat.isParceledListSlice(hostOut)) {
+                try {
+                    hostList = Reflector.with(hostOut).method("getList").call();
+                } catch (Throwable ignored) {
+                }
+            }
+            if (hostList == null) {
+                return hostOut;
+            }
+            hostList = filterOutFacebookServices(hostList);
+            if (BuildCompat.isN()) {
+                return ParceledListSliceCompat.create(hostList);
+            }
+            return hostList;
         }
     }
 
@@ -132,8 +549,13 @@ public class IPackageManagerProxy extends BinderInvocationStub {
         protected Object hook(Object who, Method method, Object[] args) throws Throwable {
             String packageName = (String) args[0];
             int flags = MethodParameterUtils.toInt(args[1]);
-            
-            
+
+            // DevxyzClone fix (round 2, ported): the real Facebook app is
+            // invisible to clones.
+            if (shouldHideFacebookApp(packageName)) {
+                return null;
+            }
+
             if ("com.android.vending".equals(packageName)) {
                 return createFakeGooglePlayServicesPackageInfo();
             }
@@ -178,6 +600,55 @@ public class IPackageManagerProxy extends BinderInvocationStub {
         }
     }
 
+    // Ported: absent from stock NewBlackbox - this AIDL entry point
+    // otherwise bypasses the Katana hiding entirely with real signatures.
+    // (The old base's host-signature substitution block is deliberately
+    // NOT ported; see PORT-REPORT.)
+    @ProxyMethod("getPackageInfoVersioned")
+    public static class GetPackageInfoVersioned extends MethodHook {
+        @Override
+        protected Object hook(Object who, Method method, Object[] args) throws Throwable {
+            android.content.pm.VersionedPackage vp =
+                    (android.content.pm.VersionedPackage) args[0];
+            String packageName = vp != null ? vp.getPackageName() : null;
+            int flags = MethodParameterUtils.toInt(args[1]);
+            if (packageName == null) {
+                return method.invoke(who, args);
+            }
+            if (shouldHideFacebookApp(packageName)) {
+                diagLog("getPackageInfoVersioned caller=" + BlackBoxCore.getAppPackageName()
+                        + " q=" + packageName + " -> null (katana hidden)");
+                return null;
+            }
+            PackageInfo packageInfo = BlackBoxCore.getBPackageManager()
+                    .getPackageInfo(packageName, flags, BlackBoxCore.getUserId());
+            if (packageInfo != null) {
+                return packageInfo;
+            }
+            if (AppSystemEnv.isOpenPackage(packageName)) {
+                MethodParameterUtils.replaceUserIdIfNeeded(args, args.length - 1);
+                return method.invoke(who, args);
+            }
+            return null;
+        }
+    }
+
+    // Ported: absent from stock NewBlackbox.
+    @ProxyMethod("checkSignatures")
+    public static class CheckSignatures extends MethodHook {
+        @Override
+        protected Object hook(Object who, Method method, Object[] args) throws Throwable {
+            String p1 = (String) args[0];
+            String p2 = (String) args[1];
+            if (shouldHideFacebookApp(p1) || shouldHideFacebookApp(p2)) {
+                diagLog("checkSignatures caller=" + BlackBoxCore.getAppPackageName()
+                        + " " + p1 + " vs " + p2 + " -> NO_MATCH (katana hidden)");
+                return PackageManager.SIGNATURE_NO_MATCH;
+            }
+            return method.invoke(who, args);
+        }
+    }
+
     @ProxyMethod("getPackageUid")
     public static class GetPackageUid extends MethodHook {
         @Override
@@ -193,6 +664,13 @@ public class IPackageManagerProxy extends BinderInvocationStub {
         protected Object hook(Object who, Method method, Object[] args) throws Throwable {
             ComponentName componentName = (ComponentName) args[0];
             int flags = MethodParameterUtils.toInt(args[1]);
+            // Round 4 (ported): Meta provider components stay hidden from
+            // clones.
+            if (componentName != null && shouldHideFacebookApp(componentName.getPackageName())) {
+                diagLog("getProviderInfo caller=" + BlackBoxCore.getAppPackageName()
+                        + " cmp=" + componentName.flattenToShortString() + " -> null (katana hidden)");
+                return null;
+            }
             ProviderInfo providerInfo = BlackBoxCore.getBPackageManager().getProviderInfo(componentName, flags, BlackBoxCore.getUserId());
             if (providerInfo != null)
                 return providerInfo;
@@ -282,7 +760,17 @@ public class IPackageManagerProxy extends BinderInvocationStub {
 
             int flags = MethodParameterUtils.toInt(args[1]);
 
+            // DevxyzClone fix (round 2, ported): the real Facebook app is
+            // invisible to clones.
+            if (shouldHideFacebookApp(packageName)) {
+                return null;
+            }
 
+            if (PKG_FACEBOOK_KATANA.equals(packageName) || packageName.equals(BlackBoxCore.getHostPkg())
+                    || packageName.equals(BlackBoxCore.getAppPackageName())) {
+                diagLog("getApplicationInfo caller=" + BlackBoxCore.getAppPackageName()
+                        + " q=" + packageName + " flags=" + Integer.toHexString(flags));
+            }
 
             ApplicationInfo applicationInfo = BlackBoxCore.getBPackageManager().getApplicationInfo(packageName, flags, BlackBoxCore.getUserId());
             if (applicationInfo != null) {
@@ -332,9 +820,30 @@ public class IPackageManagerProxy extends BinderInvocationStub {
         protected Object hook(Object who, Method method, Object[] args) throws Throwable {
             String authority = (String) args[0];
             int flags = MethodParameterUtils.toInt(args[1]);
+            // Round 4 (ported): the real Katana PlatformProvider must not
+            // leak. The stock fallthrough returns the REAL ProviderInfo
+            // for every non-virtual authority, which by itself tells SDKs
+            // the Facebook app exists.
+            if (isMetaProviderAuthority(authority) && isFacebookAppHiddenFromCurrentApp()) {
+                diagLog("resolveContentProvider caller=" + BlackBoxCore.getAppPackageName()
+                        + " auth=" + authority + " -> null (meta provider hidden)");
+                return null;
+            }
             ProviderInfo providerInfo = BlackBoxCore.getBPackageManager().resolveContentProvider(authority, flags, BActivityThread.getUserId());
             if (providerInfo == null) {
-                return method.invoke(who, args);
+                // Port adaptation: the old base re-queried the real PM and
+                // suppressed Meta results; this base's fallthrough is the
+                // raw method call, so capture its result and apply the
+                // same suppression before returning it.
+                Object hostOut = method.invoke(who, args);
+                if (hostOut instanceof ProviderInfo
+                        && isMetaPackage(((ProviderInfo) hostOut).packageName)
+                        && isFacebookAppHiddenFromCurrentApp()) {
+                    diagLog("resolveContentProvider caller=" + BlackBoxCore.getAppPackageName()
+                            + " auth=" + authority + " -> null (meta provider suppressed)");
+                    return null;
+                }
+                return hostOut;
             }
             return providerInfo;
         }
