@@ -6,6 +6,7 @@ import androidx.appcompat.app.AppCompatActivity
 import androidx.lifecycle.ViewModelProvider
 import top.niunaijun.blackbox.BlackBoxCore
 import top.niunaijun.blackboxa.util.InjectionUtil
+import top.niunaijun.blackboxa.view.clones.ClonesActivity
 import top.niunaijun.blackboxa.view.list.ListViewModel
 
 class WelcomeActivity : AppCompatActivity() {
@@ -22,7 +23,10 @@ class WelcomeActivity : AppCompatActivity() {
     }
 
     private fun jump() {
-        MainActivity.start(this)
+        // Phase B (ported from the frozen Blacks-BlackBox fork): the
+        // unified Clones screen is the home now. MainActivity (the
+        // per-profile pager) stays reachable from the Clones menu.
+        startActivity(Intent(this, ClonesActivity::class.java))
         finish()
     }
 

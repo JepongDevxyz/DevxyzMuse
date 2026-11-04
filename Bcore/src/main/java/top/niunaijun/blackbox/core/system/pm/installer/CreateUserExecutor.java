@@ -25,7 +25,10 @@ public class CreateUserExecutor implements Executor {
 
 
 
-
+        FileUtils.mkdirs(BEnvironment.getExternalDataDir(packageName, userId));
+        FileUtils.mkdirs(BEnvironment.getExternalDataFilesDir(packageName, userId));
+        FileUtils.mkdirs(BEnvironment.getExternalDataCacheDir(packageName, userId));
+        FileUtils.mkdirs(BEnvironment.getExternalObbDir(packageName, userId));
 
         return 0;
     }
