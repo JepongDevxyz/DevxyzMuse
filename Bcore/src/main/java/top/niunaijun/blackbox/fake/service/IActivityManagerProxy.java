@@ -48,6 +48,7 @@ import top.niunaijun.blackbox.fake.service.context.providers.ContentProviderStub
 import top.niunaijun.blackbox.proxy.ProxyManifest;
 import top.niunaijun.blackbox.proxy.record.ProxyBroadcastRecord;
 import top.niunaijun.blackbox.proxy.record.ProxyPendingRecord;
+import top.niunaijun.blackbox.utils.DiagLog;
 import top.niunaijun.blackbox.utils.MethodParameterUtils;
 import top.niunaijun.blackbox.utils.Reflector;
 import top.niunaijun.blackbox.utils.compat.ActivityManagerCompat;
@@ -139,6 +140,30 @@ public class IActivityManagerProxy extends ClassInvocationStub {
             if (auth instanceof String) {
                 if (ProxyManifest.isProxy((String) auth)) {
                     return method.invoke(who, args);
+                }
+
+                // DevxyzClone fix (round 4, ported from the frozen
+                // Blacks-BlackBox fork): Meta cross-app providers (Katana /
+                // Messenger / FB Lite SSO + platform providers) must not be
+                // acquirable from inside a clone - their answers are
+                // computed by the real apps against the host identity.
+                String authStr = (String) auth;
+                if (authStr.startsWith("com.facebook.katana")
+                        || authStr.startsWith("com.facebook.orca")
+                        || authStr.startsWith("com.facebook.wakizashi")) {
+                    try {
+                        String callerPackage = BActivityThread.getAppPackageName();
+                        if (callerPackage != null
+                                && !callerPackage.equals(BlackBoxCore.getHostPkg())
+                                && !authStr.startsWith(callerPackage)) {
+                            Slog.w(TAG, "Blocked Meta provider access from clone: "
+                                    + authStr + " caller=" + callerPackage);
+                            DiagLog.log("getContentProvider BLOCKED meta auth=" + authStr
+                                    + " caller=" + callerPackage);
+                            return null;
+                        }
+                    } catch (Throwable ignored) {
+                    }
                 }
 
                 if (BuildCompat.isQ()) {
