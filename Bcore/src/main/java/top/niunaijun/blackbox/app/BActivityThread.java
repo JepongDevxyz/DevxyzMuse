@@ -389,6 +389,15 @@ public class BActivityThread extends IBActivityThread.Stub {
         }
 
         PackageInfo packageInfo = BlackBoxCore.getBPackageManager().getPackageInfo(packageName, PackageManager.GET_PROVIDERS, BActivityThread.getUserId());
+        // DevxyzMuse 1.0.2 hardening (captured on device 2026-11-05): a GMS
+        // service start raced the package registry and getPackageInfo
+        // returned null, so the next line NPE'd and killed the bind.
+        // Bail out quietly instead of crashing the process bind.
+        if (packageInfo == null || packageInfo.applicationInfo == null) {
+            DiagLog.log("bindApplication bail: no PackageInfo for pkg=" + packageName
+                    + " process=" + processName);
+            return;
+        }
         ApplicationInfo applicationInfo = packageInfo.applicationInfo;
         if (packageInfo.providers == null) {
             packageInfo.providers = new ProviderInfo[]{};
