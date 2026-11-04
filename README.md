@@ -11,6 +11,11 @@ Honor 400 5G (Android 16) as of 2026-11-05.
 Package: `com.jepongdevxyz.devxyzmuse` (installs beside DevxyzClone,
 does not replace it).
 
+Signing: all builds use one permanent dedicated key (base64 PKCS12 at
+`signing/devxyzmuse-keystore.b64`, decoded by `app/build.gradle`), so
+every update installs in place — clones and their Muse sign-ins are
+preserved across updates, no re-sign-in needed.
+
 Auto-update: the app checks `version.json` in this repo on launch. To
 publish an update, bump `versionCode`/`versionName` there, point `apkUrl`
 at the new APK (GitHub Release asset), and ship the build with the same

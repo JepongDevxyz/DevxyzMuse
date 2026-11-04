@@ -3,6 +3,18 @@ plugins {
     alias(libs.plugins.jetbrains.kotlin.android)
 }
 
+// DevxyzMuse fixed signing: every build (local + CI) is signed with the
+// SAME permanent key, so updates install in place and clone data/accounts
+// survive updates. The keystore is stored base64-encoded at
+// signing/devxyzmuse-keystore.b64 (a dedicated key for this app only)
+// and decoded here at configuration time.
+def devxyzMuseKeystore = new File(projectDir, "build/fixed-signing/devxyzmuse.p12")
+if (!devxyzMuseKeystore.exists()) {
+    devxyzMuseKeystore.parentFile.mkdirs()
+    def b64 = rootProject.file("signing/devxyzmuse-keystore.b64").getText("UTF-8").replaceAll(/\s/, "")
+    devxyzMuseKeystore.bytes = java.util.Base64.getDecoder().decode(b64)
+}
+
 android {
 
     namespace 'top.niunaijun.blackboxa'
@@ -28,9 +40,22 @@ android {
         }
     }
 
+    signingConfigs {
+        fixed {
+            storeFile devxyzMuseKeystore
+            storePassword "devxyzmuse"
+            keyAlias "devxyzmuse"
+            keyPassword "devxyzmuse"
+            storeType "PKCS12"
+        }
+    }
+
     buildTypes {
+        debug {
+            signingConfig signingConfigs.fixed
+        }
         release {
-            signingConfig signingConfigs.debug
+            signingConfig signingConfigs.fixed
             minifyEnabled true
             proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
         }
