@@ -1,6 +1,1 @@
-{
-  "versionCode": 480,
-  "versionName": "1.0.0",
-  "apkUrl": "https://github.com/JepongDevxyz/DevxyzMuse/releases/download/v1.0.0/DevxyzMuse_1.0.0_arm64-v8a-debug.apk",
-  "notes": "First DevxyzMuse release: Muse-only clone app, based on the DevxyzClone 1.1.0 code whose Muse clone sign-in is proven on Honor 400 5G."
-}
+{"apkUrl":"https://github.com/JepongDevxyz/DevxyzMuse/releases/download/v1.0.1/DevxyzMuse_1.0.1_arm64-v8a-debug.apk","notes":"Diagnostic build for the Settings-tap crash: records the crash stack and every activity launch to the in-app Diagnostic Log so the exact cause can be fixed in the next release. No behavior changes.","versionCode":481,"versionName":"1.0.1"}

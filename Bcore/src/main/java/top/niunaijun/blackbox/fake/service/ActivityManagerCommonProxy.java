@@ -192,6 +192,18 @@ public class ActivityManagerCommonProxy {
                 }
                 boolean viewEscape = Intent.ACTION_VIEW.equals(intent.getAction())
                         && intent.getDataString() != null;
+                // DevxyzMuse v1.0.1 diagnostics: also record SAME-package
+                // launches of the Muse clone, so the exact activity a
+                // settings tap opens is on record even when it stays
+                // inside com.facebook.aura (previously only cross-package
+                // starts and VIEW escapes were logged).
+                if ("com.facebook.aura".equals(callerPkg)) {
+                    fbDiagLog("startActivity[same-pkg-probe] caller=" + callerPkg
+                            + " cmp=" + intent.getComponent()
+                            + " act=" + intent.getAction()
+                            + " flags=0x" + Integer.toHexString(intent.getFlags())
+                            + " data=" + intent.getDataString());
+                }
                 if (viewEscape || (tgtPkg != null && callerPkg != null && !tgtPkg.equals(callerPkg))) {
                     fbDiagLog("startActivity caller=" + callerPkg
                             + " -> target=" + tgtPkg
@@ -404,6 +416,15 @@ public class ActivityManagerCommonProxy {
     public static class FinishActivity extends MethodHook {
         @Override
         protected Object hook(Object who, Method method, Object[] args) throws Throwable {
+            // DevxyzMuse v1.0.1 diagnostics: a silent finish of the clone's
+            // root activity (no CRASH line) is itself the fingerprint of a
+            // self-exit path, distinct from an exception death.
+            try {
+                if ("com.facebook.aura".equals(BActivityThread.getAppPackageName())) {
+                    fbDiagLog("finishActivity caller=com.facebook.aura token=" + args[0]);
+                }
+            } catch (Throwable ignored) {
+            }
             BlackBoxCore.getBActivityManager().onFinishActivity((IBinder) args[0]);
             return method.invoke(who, args);
         }

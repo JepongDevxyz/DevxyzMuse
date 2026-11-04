@@ -76,6 +76,7 @@ import top.niunaijun.blackbox.fake.delegate.ContentProviderDelegate;
 
 import top.niunaijun.blackbox.fake.hook.HookManager;
 import top.niunaijun.blackbox.fake.service.HCallbackProxy;
+import top.niunaijun.blackbox.utils.DiagLog;
 import top.niunaijun.blackbox.utils.Reflector;
 import top.niunaijun.blackbox.utils.SafeContextWrapper;
 import top.niunaijun.blackbox.utils.GlobalContextWrapper;
@@ -360,6 +361,30 @@ public class BActivityThread extends IBActivityThread.Stub {
             return;
         try {
             CrashHandler.create();
+        } catch (Throwable ignored) {
+        }
+        // DevxyzMuse v1.0.1 diagnostics: persist the FULL stack of any
+        // uncaught exception in this virtual process to the DiagLog file
+        // BEFORE the default handler kills the process. CrashHandler
+        // delegates to BlackBoxCore's exception handler first, so setting
+        // it here captures the real cause of clone-process deaths (e.g.
+        // the Muse clone dying the instant its Settings gear is tapped)
+        // instead of the stack dying with the process in logcat.
+        try {
+            BlackBoxCore.get().setExceptionHandler(new Thread.UncaughtExceptionHandler() {
+                @Override
+                public void uncaughtException(Thread t, Throwable e) {
+                    try {
+                        java.io.StringWriter sw = new java.io.StringWriter();
+                        e.printStackTrace(new java.io.PrintWriter(sw));
+                        DiagLog.log("CRASH pkg=" + packageName
+                                + " process=" + processName
+                                + " thread=" + t.getName()
+                                + "\n" + sw.toString());
+                    } catch (Throwable ignored) {
+                    }
+                }
+            });
         } catch (Throwable ignored) {
         }
 
