@@ -1,13 +1,15 @@
 package top.niunaijun.blackbox.fake.service;
 
 import android.content.Context;
-import android.content.pm.ParceledListSlice;
 
+import java.lang.reflect.Constructor;
+import java.lang.reflect.Method;
 import java.util.ArrayList;
 
 import black.android.app.role.BRIRoleManagerStub;
 import black.android.os.BRServiceManager;
 import top.niunaijun.blackbox.fake.hook.BinderInvocationStub;
+import top.niunaijun.blackbox.fake.hook.MethodHook;
 import top.niunaijun.blackbox.fake.service.base.ValueMethodProxy;
 
 /**
@@ -58,7 +60,37 @@ public class IRoleManagerProxy extends BinderInvocationStub {
         addMethodHook(new ValueMethodProxy("isRoleHeldAsUser", false));
         addMethodHook(new ValueMethodProxy("isRoleAvailable", true));
         addMethodHook(new ValueMethodProxy("isRoleAvailableAsUser", true));
-        addMethodHook(new ValueMethodProxy("getRoleHolders", new ParceledListSlice<>(new ArrayList<>())));
-        addMethodHook(new ValueMethodProxy("getRoleHoldersAsUser", new ParceledListSlice<>(new ArrayList<>())));
+        addMethodHook(new EmptyRoleHoldersHook("getRoleHolders"));
+        addMethodHook(new EmptyRoleHoldersHook("getRoleHoldersAsUser"));
+    }
+
+    /**
+     * Returns an empty ParceledListSlice. The class is not in the public
+     * SDK surface this module compiles against, so it is built
+     * reflectively at runtime (it always exists on device - it is how
+     * the real RoleService returns holder lists).
+     */
+    private static class EmptyRoleHoldersHook extends MethodHook {
+        private final String mName;
+        private Object mCached;
+
+        EmptyRoleHoldersHook(String name) {
+            mName = name;
+        }
+
+        @Override
+        protected String getMethodName() {
+            return mName;
+        }
+
+        @Override
+        protected Object hook(Object who, Method method, Object[] args) throws Throwable {
+            if (mCached == null) {
+                Class<?> slice = Class.forName("android.content.pm.ParceledListSlice");
+                Constructor<?> ctor = slice.getConstructor(java.util.List.class);
+                mCached = ctor.newInstance(new ArrayList<>());
+            }
+            return mCached;
+        }
     }
 }
