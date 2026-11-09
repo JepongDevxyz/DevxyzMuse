@@ -2,6 +2,7 @@ package top.niunaijun.blackboxa.view.clones
 
 import android.app.Activity
 import android.content.Context
+import android.widget.Toast
 import android.content.pm.PackageInfo
 import android.os.Build
 import androidx.lifecycle.lifecycleScope
@@ -26,8 +27,11 @@ import top.niunaijun.blackboxa.view.base.BaseActivity
  * the container: the clone's data directory is not touched, so its sign-in
  * survives - only uninstall/clear ever removes guest data.
  *
- * Every attempt and failure is written to DiagLog ("clone-auto-update:")
- * so a silent failure is still provable from the log she can share.
+ * Every check outcome, attempt and failure is written to DiagLog
+ * ("clone-auto-update:") so a silent failure is still provable from the
+ * log she can share. v1.0.4 (her order): when one or more clones actually
+ * updated, a single small toast says so - still fully automatic, just no
+ * longer invisible.
  */
 object CloneAutoUpdater {
 
@@ -50,7 +54,15 @@ object CloneAutoUpdater {
         val appContext = activity.applicationContext
         scope.launch {
             try {
-                withContext(Dispatchers.IO) { runUpdate(appContext) }
+                val updated = withContext(Dispatchers.IO) { runUpdate(appContext) }
+                if (updated > 0) {
+                    val msg = if (updated == 1) {
+                        "Na-update ang clone sa bagong Muse"
+                    } else {
+                        "Na-update ang $updated clones sa bagong Muse"
+                    }
+                    Toast.makeText(appContext, msg, Toast.LENGTH_LONG).show()
+                }
             } catch (e: Exception) {
                 DiagLog.log("clone-auto-update: run exception " + e)
             } finally {
@@ -63,27 +75,45 @@ object CloneAutoUpdater {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) info.longVersionCode
         else info.versionCode.toLong()
 
-    private fun runUpdate(context: Context) {
+    /** Returns how many clones were actually updated (for the toast). */
+    private fun runUpdate(context: Context): Int {
         val hostInfo = try {
             context.packageManager.getPackageInfo(MUSE_PACKAGE, 0)
         } catch (e: Exception) {
             DiagLog.log("clone-auto-update: host Muse not installed, skip")
-            return
+            return 0
         }
         val hostVersion = versionOf(hostInfo)
 
         val records = CloneRegistry(context).loadRecords()
             .filter { it.packageName == MUSE_PACKAGE }
-        if (records.isEmpty()) return
+        if (records.isEmpty()) {
+            DiagLog.log("clone-auto-update: check host=" + hostVersion + " no clones")
+            return 0
+        }
 
+        var updated = 0
         val core = BlackBoxCore.get()
         for (record in records) {
             try {
-                if (!core.isInstalled(MUSE_PACKAGE, record.userId)) continue
+                if (!core.isInstalled(MUSE_PACKAGE, record.userId)) {
+                    DiagLog.log(
+                        "clone-auto-update: check userId=" + record.userId +
+                            " not installed, skip"
+                    )
+                    continue
+                }
                 val virtualInfo = core.getInstalledPackages(0, record.userId)
                     .firstOrNull { it.packageName == MUSE_PACKAGE } ?: continue
                 val cloneVersion = versionOf(virtualInfo)
-                if (cloneVersion >= hostVersion) continue
+                if (cloneVersion >= hostVersion) {
+                    DiagLog.log(
+                        "clone-auto-update: check userId=" + record.userId +
+                            " clone=" + cloneVersion + " host=" + hostVersion +
+                            " up-to-date"
+                    )
+                    continue
+                }
 
                 val result = core.installPackageAsUser(MUSE_PACKAGE, record.userId)
                 val afterInfo = try {
@@ -99,6 +129,7 @@ object CloneAutoUpdater {
                         " success=" + result.success + " now=" + afterVersion +
                         " msg=" + result.msg
                 )
+                if (result.success) updated++
             } catch (e: Exception) {
                 // One bad clone must not stop the others.
                 DiagLog.log(
@@ -106,5 +137,6 @@ object CloneAutoUpdater {
                 )
             }
         }
+        return updated
     }
 }
