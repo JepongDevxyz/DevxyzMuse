@@ -170,4 +170,17 @@ public class MethodParameterUtils {
         }
         return (int)obj;
     }
+
+    public static void replaceUserIdIfNeeded(Object[] args, int index) {
+        if (args == null || index < 0 || index >= args.length) {
+            return;
+        }
+        if (args[index] instanceof Integer) {
+            int userId = (Integer) args[index];
+            int hostUserId = BlackBoxCore.getHostUserId();
+            if (userId == 0 && hostUserId != 0) {
+                args[index] = hostUserId;
+            }
+        }
+    }
 }
