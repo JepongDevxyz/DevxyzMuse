@@ -110,6 +110,11 @@ class ClonesActivity : BaseActivity() {
         // DevxyzMuse auto-update: silently checks version.json in the
         // DevxyzMuse repo (throttled to once per 6 hours).
         AppUpdater.check(this)
+
+        // DevxyzMuse v1.0.3: silently bring every Muse clone up to the
+        // real Muse app's version whenever Play Store has updated it
+        // (throttled to once per hour, no UI).
+        CloneAutoUpdater.check(this)
     }
 
     private var validated = false
