@@ -64,6 +64,26 @@ public class MethodParameterUtils {
         }
     }
 
+    /**
+     * Replace EVERY int arg equal to the virtual (guest) uid with the host
+     * uid. Value-matched (not position-matched) on purpose: newer APIs such
+     * as checkPermissionForDevice(permission, pid, uid, deviceId) end in a
+     * deviceId, which must not be rewritten. Ported from ZiTanIOI's fork,
+     * where this backs the permission-query fix for WebView
+     * net::ERR_CACHE_MISS inside the container.
+     */
+    public static void replaceAppUid(Object[] args) {
+        if (args == null) {
+            return;
+        }
+        int uid = BActivityThread.getBUid();
+        for (int i = 0; i < args.length; i++) {
+            if (args[i] instanceof Integer && (Integer) args[i] == uid) {
+                args[i] = BlackBoxCore.getHostUid();
+            }
+        }
+    }
+
     public static void replaceLastUid(Object[] args) {
         int index = ArrayUtils.indexOfLast(args, Integer.class);
         if (index != -1) {
@@ -149,18 +169,5 @@ public class MethodParameterUtils {
             return ((Long) obj).intValue();
         }
         return (int)obj;
-    }
-
-    public static void replaceUserIdIfNeeded(Object[] args, int index) {
-        if (args == null || index < 0 || index >= args.length) {
-            return;
-        }
-        if (args[index] instanceof Integer) {
-            int userId = (Integer) args[index];
-            int hostUserId = BlackBoxCore.getHostUserId();
-            if (userId == 0 && hostUserId != 0) {
-                args[index] = hostUserId;
-            }
-        }
     }
 }

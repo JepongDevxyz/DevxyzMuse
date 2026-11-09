@@ -943,6 +943,8 @@ public class IPackageManagerProxy extends BinderInvocationStub {
             }
             
             
+            MethodParameterUtils.replaceFirstAppPkg(args);
+            MethodParameterUtils.replaceAppUid(args);
             return method.invoke(who, args);
         }
     }
@@ -973,6 +975,19 @@ public class IPackageManagerProxy extends BinderInvocationStub {
             }
             
             
+            MethodParameterUtils.replaceFirstAppPkg(args);
+            MethodParameterUtils.replaceAppUid(args);
+            return method.invoke(who, args);
+        }
+    }
+
+    @ProxyMethod("checkUidPermission")
+    public static class CheckUidPermission extends MethodHook {
+        @Override
+        protected Object hook(Object who, Method method, Object[] args) throws Throwable {
+            // Same host-identity rewrite as checkPermission above: the
+            // virtual uid is unknown to the real PMS and reads as DENIED.
+            MethodParameterUtils.replaceAppUid(args);
             return method.invoke(who, args);
         }
     }
