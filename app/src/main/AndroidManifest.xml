@@ -56,5 +56,18 @@
                 <action android:name="android.intent.action.MAIN" />
             </intent-filter>
         </activity>
+
+        <!-- DevxyzMuse v1.0.6: fires the moment the real Muse app is
+             replaced (Play Store update) so the clones follow
+             immediately. PACKAGE_REPLACED is a system broadcast; the
+             receiver itself only acts on com.facebook.aura. -->
+        <receiver
+            android:name=".view.clones.MuseUpdateReceiver"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.PACKAGE_REPLACED" />
+                <data android:scheme="package" />
+            </intent-filter>
+        </receiver>
     </application>
 </manifest>
