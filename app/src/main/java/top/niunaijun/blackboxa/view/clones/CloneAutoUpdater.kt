@@ -14,7 +14,9 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import top.niunaijun.blackbox.BlackBoxCore
 import top.niunaijun.blackbox.utils.DiagLog
+import top.niunaijun.blackboxa.R
 import top.niunaijun.blackboxa.data.CloneRegistry
+import java.util.Collections
 
 /**
  * DevxyzMuse clone auto-update (v1.0.3-v1.0.6, her order: "auto at tahimik",
@@ -61,6 +63,17 @@ import top.niunaijun.blackboxa.data.CloneRegistry
  * leaves the version stale is logged STILL STALE and never toasted.
  * When one or more clones actually updated, a single small toast says
  * so - still fully automatic, just no longer invisible.
+ *
+ * v1.0.7 (her order 2026-11-21: "Dapat pala nakikita ang app version
+ * kapag ni long press mo bawat clone app ... mag dagdag ka ng check
+ * update at app version"): the per-clone long-press menu now shows
+ * the clone's version AND the real Muse app's version side by side
+ * (versionsFor), so "updated na nga ba" is answered at a glance, plus
+ * a manual "Check update" item (checkOne) that checks and updates
+ * just that clone on demand and always toasts the result. The manual
+ * check is user-initiated, so it bypasses the throttle - but it never
+ * runs at the same time as the automatic check (shared guard), and it
+ * never stamps the auto throttle either.
  */
 object CloneAutoUpdater {
 
@@ -96,6 +109,188 @@ object CloneAutoUpdater {
             .edit().putLong(KEY_LAST_CHECK, 0L).apply()
     }
 
+    // ------------------------------------------------------------------
+    // v1.0.7: per-clone version display + manual "Check update"
+    // ------------------------------------------------------------------
+
+    // UserIds with a manual check in flight. A manual check never runs
+    // at the same time as the automatic check, and two manual checks
+    // never run on the same clone - installPackageAsUser must not be
+    // called twice on one clone at once.
+    private val manualRunning = Collections.synchronizedSet(mutableSetOf<Int>())
+
+    /**
+     * Versions for the per-clone long-press menu: the display version
+     * (versionName, or "build <code>" when the name is missing) of this
+     * clone and of the real host Muse app. Null per side when that side
+     * cannot be read. Self-bounded: waits at most ~2s for the engine,
+     * then gives up instead of stalling the menu.
+     */
+    fun versionsFor(context: Context, userId: Int): Pair<String?, String?> {
+        val hostVersion = try {
+            context.packageManager.getPackageInfo(MUSE_PACKAGE, 0)?.let { displayVersion(it) }
+        } catch (e: Exception) {
+            null
+        }
+        val cloneVersion = try {
+            if (!waitForClone(userId, 2_000L)) return Pair(null, hostVersion)
+            val info = BlackBoxCore.get().getInstalledPackages(0, userId)
+                .firstOrNull { it.packageName == MUSE_PACKAGE }
+            info?.let { displayVersion(it) }
+        } catch (e: Exception) {
+            null
+        }
+        return Pair(cloneVersion, hostVersion)
+    }
+
+    private fun displayVersion(info: PackageInfo): String =
+        info.versionName ?: ("build " + versionOf(info))
+
+    private fun waitForClone(userId: Int, maxWaitMs: Long): Boolean {
+        val core = BlackBoxCore.get()
+        val deadline = System.currentTimeMillis() + maxWaitMs
+        while (System.currentTimeMillis() < deadline) {
+            try {
+                if (core.isInstalled(MUSE_PACKAGE, userId)) return true
+            } catch (e: Exception) {
+                // Not ready yet - keep waiting.
+            }
+            try {
+                Thread.sleep(250L)
+            } catch (e: InterruptedException) {
+                return false
+            }
+        }
+        return false
+    }
+
+    /**
+     * Manual per-clone check from the long-press menu ("Check update").
+     * User-initiated, so it bypasses the throttle and always toasts the
+     * result - up-to-date, updated (from -> to), or failed. It never
+     * stamps the auto throttle: the automatic check still runs on its
+     * own schedule afterwards.
+     */
+    fun checkOne(context: Context, userId: Int) {
+        val appContext = context.applicationContext
+        if (runningThisSession || manualRunning.contains(userId)) {
+            scope.launch { toast(appContext, R.string.clone_check_busy) }
+            return
+        }
+        manualRunning.add(userId)
+        scope.launch {
+            try {
+                if (!withContext(Dispatchers.IO) { waitForClone(userId, 30_000L) }) {
+                    DiagLog.log(
+                        "clone-auto-update: manual check userId=" + userId +
+                            " engine not ready after 30s"
+                    )
+                    toast(appContext, R.string.clone_check_unknown)
+                    return@launch
+                }
+                when (val outcome = withContext(Dispatchers.IO) { runSingleUpdate(appContext, userId) }) {
+                    is SingleResult.UpToDate -> toast(
+                        appContext,
+                        appContext.getString(R.string.clone_check_up_to_date, outcome.version)
+                    )
+                    is SingleResult.Updated -> toast(
+                        appContext,
+                        appContext.getString(R.string.clone_check_updated, outcome.from, outcome.to)
+                    )
+                    SingleResult.StillStale -> toast(appContext, R.string.clone_check_failed)
+                    SingleResult.NotInstalled -> toast(appContext, R.string.clone_check_not_installed)
+                    SingleResult.Unknown -> toast(appContext, R.string.clone_check_unknown)
+                }
+            } catch (e: Exception) {
+                DiagLog.log("clone-auto-update: manual check userId=" + userId + " exception " + e)
+                toast(appContext, R.string.clone_check_failed)
+            } finally {
+                manualRunning.remove(userId)
+            }
+        }
+    }
+
+    private sealed class SingleResult {
+        data class UpToDate(val version: String) : SingleResult()
+        data class Updated(val from: String, val to: String) : SingleResult()
+        object StillStale : SingleResult()
+        object NotInstalled : SingleResult()
+        object Unknown : SingleResult()
+    }
+
+    private fun runSingleUpdate(context: Context, userId: Int): SingleResult {
+        val hostInfo = try {
+            context.packageManager.getPackageInfo(MUSE_PACKAGE, 0)
+        } catch (e: Exception) {
+            DiagLog.log(
+                "clone-auto-update: manual check userId=" + userId +
+                    " host Muse not installed"
+            )
+            return SingleResult.Unknown
+        }
+        val hostVersion = versionOf(hostInfo)
+        val core = BlackBoxCore.get()
+        try {
+            if (!core.isInstalled(MUSE_PACKAGE, userId)) {
+                DiagLog.log("clone-auto-update: manual check userId=" + userId + " not installed")
+                return SingleResult.NotInstalled
+            }
+            val virtualInfo = core.getInstalledPackages(0, userId)
+                .firstOrNull { it.packageName == MUSE_PACKAGE }
+                ?: run {
+                    DiagLog.log(
+                        "clone-auto-update: manual check userId=" + userId +
+                            " virtual info missing"
+                    )
+                    return SingleResult.Unknown
+                }
+            val cloneVersion = versionOf(virtualInfo)
+            val cloneName = displayVersion(virtualInfo)
+            if (cloneVersion >= hostVersion) {
+                DiagLog.log(
+                    "clone-auto-update: manual check userId=" + userId +
+                        " clone=" + cloneVersion + " host=" + hostVersion + " up-to-date"
+                )
+                return SingleResult.UpToDate(cloneName)
+            }
+            val result = core.installPackageAsUser(MUSE_PACKAGE, userId)
+            val afterInfo = try {
+                core.getInstalledPackages(0, userId)
+                    .firstOrNull { it.packageName == MUSE_PACKAGE }
+            } catch (e: Exception) {
+                null
+            }
+            val afterVersion = afterInfo?.let { versionOf(it) } ?: -1L
+            val afterName = afterInfo?.let { displayVersion(it) } ?: "?"
+            // The re-read version is the proof, not result.success.
+            val reallyUpdated = afterVersion >= hostVersion
+            DiagLog.log(
+                "clone-auto-update: manual check userId=" + userId +
+                    " from=" + cloneVersion + " host=" + hostVersion +
+                    " success=" + result.success + " now=" + afterVersion +
+                    " msg=" + result.msg +
+                    (if (reallyUpdated) "" else " STILL STALE")
+            )
+            return if (reallyUpdated) SingleResult.Updated(cloneName, afterName)
+            else SingleResult.StillStale
+        } catch (e: Exception) {
+            DiagLog.log("clone-auto-update: manual check userId=" + userId + " exception " + e)
+            return SingleResult.Unknown
+        }
+    }
+
+    private suspend fun toast(context: Context, res: Int) {
+        withContext(Dispatchers.Main) {
+            Toast.makeText(context, res, Toast.LENGTH_LONG).show()
+        }
+    }
+
+    private suspend fun toast(context: Context, text: String) {
+        withContext(Dispatchers.Main) {
+            Toast.makeText(context, text, Toast.LENGTH_LONG).show()
+        }
+    }
+
     private fun schedule(
         appContext: Context,
         maxWaitMs: Long,
@@ -103,6 +298,17 @@ object CloneAutoUpdater {
         onDone: (() -> Unit)? = null
     ) {
         if (runningThisSession) {
+            onDone?.invoke()
+            return
+        }
+        // A manual "Check update" in flight owns the engine for its
+        // clone: the automatic check defers (throttle NOT stamped, so
+        // the next launch retries) instead of installing twice at once.
+        if (manualRunning.isNotEmpty()) {
+            DiagLog.log(
+                "clone-auto-update: manual check running, auto check deferred" +
+                    " (throttle NOT stamped)"
+            )
             onDone?.invoke()
             return
         }

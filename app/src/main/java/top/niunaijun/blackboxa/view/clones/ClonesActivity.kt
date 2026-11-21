@@ -28,6 +28,7 @@ import com.google.android.material.floatingactionbutton.FloatingActionButton
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 import top.niunaijun.blackbox.BlackBoxCore
 import top.niunaijun.blackbox.utils.DiagLog
 import top.niunaijun.blackboxa.R
@@ -367,50 +368,89 @@ class ClonesActivity : BaseActivity() {
     }
 
     // ------------------------------------------------------------------
-    // Per-clone menu: rename / reset name / clear data / delete
+    // Per-clone menu: version headers + check update / open / rename /
+    // reset name / clear data / delete
+    //
+    // v1.0.7 (her order): the menu shows the clone's version AND the
+    // real Muse app's version side by side, so "updated na nga ba" is
+    // answered at a glance, plus a manual "Check update" that checks
+    // and updates just this clone and always toasts the result. The
+    // versions come from the engine, which may need a moment - they are
+    // fetched off the main thread first (bounded wait) so the menu
+    // opens with real numbers instead of a loading placeholder. On a
+    // slow engine the menu still appears, with "hindi makuha".
     // ------------------------------------------------------------------
 
     private fun showCloneMenu(anchor: View, record: CloneRecord) {
-        val popup = PopupMenu(this, anchor)
-        popup.menuInflater.inflate(R.menu.clone_item_menu, popup.menu)
-        popup.menu.findItem(R.id.clone_reset_name).isVisible = record.customName != null
-        popup.setOnMenuItemClickListener { item ->
-            when (item.itemId) {
-                R.id.clone_open -> {
-                    launchClone(record)
-                    true
+        lifecycleScope.launch {
+            val versions = withContext(Dispatchers.IO) {
+                withTimeoutOrNull(MENU_VERSION_WAIT_MS) {
+                    CloneAutoUpdater.versionsFor(this@ClonesActivity, record.userId)
                 }
-                R.id.clone_rename -> {
-                    showRenameDialog(record)
-                    true
-                }
-                R.id.clone_reset_name -> {
-                    registry.setCustomName(record.userId, null)
-                    refresh()
-                    true
-                }
-                R.id.clone_clear -> {
-                    MaterialDialog(this).show {
-                        title(res = R.string.app_clear)
-                        message(text = getString(R.string.app_clear_hint, displayName(record)))
-                        positiveButton(res = R.string.done) { clearCloneData(record) }
-                        negativeButton(res = R.string.cancel)
-                    }
-                    true
-                }
-                R.id.clone_delete -> {
-                    MaterialDialog(this).show {
-                        title(res = R.string.clone_delete)
-                        message(text = getString(R.string.clone_delete_hint, displayName(record)))
-                        positiveButton(res = R.string.done) { deleteClone(record) }
-                        negativeButton(res = R.string.cancel)
-                    }
-                    true
-                }
-                else -> false
             }
+            val popup = PopupMenu(this@ClonesActivity, anchor)
+            popup.menuInflater.inflate(R.menu.clone_item_menu, popup.menu)
+            popup.menu.findItem(R.id.clone_reset_name).isVisible = record.customName != null
+            val cloneVersionItem = popup.menu.findItem(R.id.clone_version_clone)
+            val hostVersionItem = popup.menu.findItem(R.id.clone_version_host)
+            if (versions != null) {
+                val (cloneVersion, hostVersion) = versions
+                cloneVersionItem.title = if (cloneVersion != null) {
+                    getString(R.string.clone_version_clone, cloneVersion)
+                } else {
+                    getString(R.string.clone_version_unknown)
+                }
+                hostVersionItem.title = if (hostVersion != null) {
+                    getString(R.string.clone_version_host, hostVersion)
+                } else {
+                    getString(R.string.clone_version_unknown)
+                }
+            } else {
+                cloneVersionItem.title = getString(R.string.clone_version_unknown)
+                hostVersionItem.title = getString(R.string.clone_version_unknown)
+            }
+            popup.setOnMenuItemClickListener { item ->
+                when (item.itemId) {
+                    R.id.clone_check_update -> {
+                        CloneAutoUpdater.checkOne(this@ClonesActivity, record.userId)
+                        true
+                    }
+                    R.id.clone_open -> {
+                        launchClone(record)
+                        true
+                    }
+                    R.id.clone_rename -> {
+                        showRenameDialog(record)
+                        true
+                    }
+                    R.id.clone_reset_name -> {
+                        registry.setCustomName(record.userId, null)
+                        refresh()
+                        true
+                    }
+                    R.id.clone_clear -> {
+                        MaterialDialog(this@ClonesActivity).show {
+                            title(res = R.string.app_clear)
+                            message(text = getString(R.string.app_clear_hint, displayName(record)))
+                            positiveButton(res = R.string.done) { clearCloneData(record) }
+                            negativeButton(res = R.string.cancel)
+                        }
+                        true
+                    }
+                    R.id.clone_delete -> {
+                        MaterialDialog(this@ClonesActivity).show {
+                            title(res = R.string.clone_delete)
+                            message(text = getString(R.string.clone_delete_hint, displayName(record)))
+                            positiveButton(res = R.string.done) { deleteClone(record) }
+                            negativeButton(res = R.string.cancel)
+                        }
+                        true
+                    }
+                    else -> false
+                }
+            }
+            popup.show()
         }
-        popup.show()
     }
 
     private fun showRenameDialog(record: CloneRecord) {
@@ -473,6 +513,9 @@ class ClonesActivity : BaseActivity() {
     companion object {
         private const val KEY_PENDING_USER = "pendingUserId"
         private const val POWERED_BY = "Powered by Jepong Devxyz"
+        // v1.0.7: longest the long-press menu waits for the engine to
+        // answer the clone/host versions before opening anyway.
+        private const val MENU_VERSION_WAIT_MS = 2_500L
         // DevxyzMuse: this variant clones ONLY the Muse app.
         private const val ALLOWED_PACKAGE = "com.facebook.aura"
         private const val MUSE_ONLY_MESSAGE =

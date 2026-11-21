@@ -76,4 +76,15 @@
     <string name="clones_profiles">Profiles</string>
     <string name="clone_open">Open clone</string>
     <string name="clone_reset_name">Reset name</string>
+    <string name="clone_version_loading">App version: …</string>
+    <string name="clone_version_clone">Clone version: %s</string>
+    <string name="clone_version_host">Original version: %s</string>
+    <string name="clone_version_unknown">App version: hindi makuha</string>
+    <string name="clone_check_update">Check update</string>
+    <string name="clone_check_up_to_date">Naka-update na ang clone na ito (%s)</string>
+    <string name="clone_check_updated">Na-update ang clone: %s → %s</string>
+    <string name="clone_check_failed">Hindi na-update ang clone — tingnan ang Diagnostic Log</string>
+    <string name="clone_check_busy">May check na tumatakbo, sandali lang</string>
+    <string name="clone_check_unknown">Hindi pa makuha ang version ng clone, subukan ulit mamaya</string>
+    <string name="clone_check_not_installed">Hindi naka-install ang clone na ito</string>
 </resources>
